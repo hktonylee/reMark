@@ -101,6 +101,9 @@ class TestAuthManager:
 
             token = await auth.register_device("one-time-code")
 
+        assert mock_client.post.call_args.args == (
+            "https://webapp.cloud.remarkable.com/token/json/2/device/new",
+        )
         assert token == "new-device-token-789"
         assert token_file.read_text() == "new-device-token-789"
 
@@ -150,6 +153,9 @@ class TestAuthManager:
             t2 = await auth.get_user_token()
             assert t2 == user_jwt
             assert mock_client.post.call_count == 1
+            assert mock_client.post.call_args.args == (
+                "https://webapp.cloud.remarkable.com/token/json/2/user/new",
+            )
 
     @pytest.mark.asyncio
     async def test_get_user_token_refreshes_when_expired(self, tmp_path):

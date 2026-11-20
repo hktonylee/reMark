@@ -22,7 +22,7 @@ from src.http_pool import SharedHttpPool
 
 logger = logging.getLogger(__name__)
 
-AUTH_BASE = "https://webapp-production-dot-remarkable-production.appspot.com"
+AUTH_BASE = "https://webapp.cloud.remarkable.com"
 DEVICE_TOKEN_ENDPOINT = f"{AUTH_BASE}/token/json/2/device/new"
 USER_TOKEN_ENDPOINT = f"{AUTH_BASE}/token/json/2/user/new"
 

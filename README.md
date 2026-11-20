@@ -12,7 +12,7 @@
 
 Write on your reMarkable. Typed text and handwriting become searchable Markdown in Obsidian, with diagrams as inline SVG. Enable tags, summaries, action items, or a OneNote mirror as needed. Push responses back to the tablet, query your vault in natural language, drive Microsoft To Do / Calendar / Teams, and manage sync from the web dashboard and mobile PWA.
 
-> **Latest:** v0.8.0 — Offline & Scale: provider-agnostic LLM layer (Ollama or Anthropic), streaming downloads, batch embeddings, shared httpx pool, Bridge API v2 (note status, preview, vault search). Obsidian plugin now in the Community Store. See [CHANGELOG.md](CHANGELOG.md) for the full history.
+> Codex page conversion is available in this source checkout. See [CHANGELOG.md](CHANGELOG.md) for release history.
 
 <p align="center">
   <a href="https://github.com/BGGBTAC/reMark/wiki/Web-Dashboard">
@@ -30,7 +30,7 @@ Write on your reMarkable. Typed text and handwriting become searchable Markdown 
 
 ### Core sync & processing
 - **Page conversion** — local Codex CLI reads one image per page with typed text and pen strokes together, then returns Markdown with inline SVG
-- **Action item extraction** — tasks, questions, follow-ups from both text patterns and pen color annotations
+- **Optional action item extraction** — finds tasks, questions, and follow-ups in converted Markdown and uses configured pen colors as additional cues
 - **Auto-tagging** and **summarization** — categorizes and condenses notes
 - **Real-time sync** — WebSocket notifications or configurable cron schedule
 
@@ -172,7 +172,8 @@ All shots are regenerated automatically on every release — see [.github/workfl
 - (Optional) [Anthropic API key](https://console.anthropic.com/) for enrichment and response analysis
 
 The CLI runs on the sync host and sends page images to OpenAI for conversion.
-For conversion only, leave enrichment disabled and set `sync.push_responses: false`.
+It transcribes text and redraws diagrams as inline SVG. reMark joins nonblank
+pages in notebook order and writes one Markdown file with YAML frontmatter.
 
 ### VPS Deployment
 
@@ -183,17 +184,19 @@ For conversion only, leave enrichment disabled and set `sync.push_responses: fal
 
 ## Installation
 
-### From PyPI (recommended)
+### From PyPI
 
 ```bash
 pip install remark-bridge
 ```
 
+To use Codex page conversion before a package release includes it, install
+from a checkout containing the change.
+
 ### From source
 
 ```bash
-git clone https://github.com/BGGBTAC/reMark.git
-cd reMark
+# Run from the reMark checkout.
 pip install .
 ```
 
@@ -201,30 +204,22 @@ pip install .
 
 ### With Docker
 
-Every release auto-publishes a multi-arch container to GitHub Container
-Registry. The shipped `docker-compose.yml` defaults to pulling that
-image so you don't need a local checkout to run it.
+Build from the checkout to use Codex page conversion before it ships in
+the published image. The Dockerfile includes the Codex CLI.
 
 ```bash
-# 1. Grab the compose file and env template
-curl -O https://raw.githubusercontent.com/BGGBTAC/reMark/main/docker-compose.yml
-curl -o .env https://raw.githubusercontent.com/BGGBTAC/reMark/main/.env.example
+# Run from the reMark checkout. Fill in .env for any optional integrations.
+cp .env.example .env
 
-# 2. Fill in .env for any optional integrations.
-
-# 3. Prepare a config directory on the host
+# Prepare config and set obsidian.vault_path to /vault.
 mkdir -p config
-curl -o config/config.yaml https://raw.githubusercontent.com/BGGBTAC/reMark/main/config.example.yaml
-# edit config/config.yaml — at minimum set vault_path to /vault
+cp config.example.yaml config/config.yaml
 
-# 4. Sign in to Codex inside the sync container and start both services.
-docker compose run --rm --no-deps --entrypoint codex sync login --device-auth
-docker compose up -d
+# Build, sign in to Codex, and start both services.
+docker compose build
+docker compose run --rm --no-deps --pull never --entrypoint codex sync login --device-auth
+docker compose up -d --pull never
 ```
-
-Prefer building from a checkout? The same compose file has a `build:`
-block as fallback. Run `docker compose build` before signing in and starting
-the services.
 
 The dashboard is reachable on <http://localhost:8000> (set `REMARK_WEB_PORT`
 in `.env` to change the host port). First-time reMarkable Cloud auth
@@ -258,6 +253,28 @@ remark-bridge setup
 ```
 
 During setup you'll need a one-time code from [my.remarkable.com/device/browser/connect](https://my.remarkable.com/device/browser/connect).
+
+### Upgrade from OCR-based sync
+
+Install Codex on the sync host and run `codex login` as the account that
+runs sync. Remove the legacy `ocr` section from your config. If you wrote
+an OCR plugin, remove it from your plugin directory since the OCR hook
+has been removed.
+
+For page conversion without optional enrichment or responses, set the
+following in your existing config.
+
+```yaml
+processing:
+  extract_actions: false
+  extract_tags: false
+  generate_summary: false
+sync:
+  push_responses: false
+```
+
+Run `remark-bridge sync --once` to verify the setup with a new or changed
+notebook. Sync uses the existing state DB to skip unchanged notebooks.
 
 ## Configuration
 
@@ -383,7 +400,7 @@ reMark can be extended with user-written plugins. See **[docs/plugins.md](docs/p
 **Quick overview:**
 
 1. Create a `.py` file in `~/.config/remark/plugins/` (configurable via `plugins.plugin_dir`), or distribute a package exposing a `remark_bridge.plugins` entry point.
-2. Subclass one or more of the four hook types in [src/plugins/hooks.py](src/plugins/hooks.py):
+2. Subclass one or more of the three hook types in [src/plugins/hooks.py](src/plugins/hooks.py):
    - `ActionExtractorHook` — emit extra action items from note text.
    - `NoteProcessorHook` — post-process the structured note before it's written to the vault.
    - `SyncHook` — observe sync lifecycle events (`before_sync`, `after_sync`, `after_document`).
@@ -488,25 +505,21 @@ Register an app at [entra.microsoft.com](https://entra.microsoft.com) (Public cl
 
 ## reMarkable Marking Conventions
 
-Use pen colors and text patterns to mark up your notes. reMark detects both, so it works on the monochrome rM2 too (just use text patterns).
-
-| Mark | Pen Color | Meaning | Detection |
-|------|-----------|---------|-----------|
-| Action item | Red | Task to do | Color filter |
-| Question | Blue | Needs follow-up | Color filter |
-| Important | Yellow highlight | Key info | Color filter |
-| Done | Green | Completed | Color filter |
-| `TODO:` text | Any | Task | Text pattern |
-| `Q:` text | Any | Question | Text pattern |
-| `!` prefix | Any | Priority flag | Text pattern |
-| `[ ]` checkbox | Any | Task checkbox | Text pattern |
+Enable `processing.extract_actions` to extract actions from converted
+Markdown. Use text cues such as `TODO:`, `Q:`, or an unchecked Markdown
+checkbox. To add pen color cues, set `processing.actions.action_colors`
+to the reMarkable color indices you use for actions. Red (6) is the default.
 
 ## Deployment (systemd)
+
+Install Codex on the service's `PATH` and run `codex login` as the
+`remark` user defined in the sync unit. For Codex conversion, install
+reMark from this checkout as described above.
 
 ```bash
 # Install on VPS
 sudo apt install libcairo2-dev
-pip install remark-bridge
+pip install .
 
 # Run setup
 remark-bridge setup
@@ -519,7 +532,7 @@ sudo cp systemd/remark-bridge-web.service  /etc/systemd/system/
 # Drop secrets into /etc/remark-bridge/env (read by both units)
 sudo mkdir -p /etc/remark-bridge
 sudo tee /etc/remark-bridge/env > /dev/null <<'ENV'
-ANTHROPIC_API_KEY=sk-ant-...
+# ANTHROPIC_API_KEY=sk-ant-... (optional, for Anthropic-powered features)
 # NOTION_TOKEN=secret_... (optional)
 ENV
 sudo chmod 600 /etc/remark-bridge/env

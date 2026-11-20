@@ -22,7 +22,6 @@ from src.config import PluginConfig
 from src.plugins.hooks import (
     ActionExtractorHook,
     NoteProcessorHook,
-    OCRBackendHook,
     Plugin,
     SyncHook,
 )
@@ -169,7 +168,6 @@ class PluginRegistry:
 
 _HOOK_BASES: tuple[type, ...] = (
     ActionExtractorHook,
-    OCRBackendHook,
     NoteProcessorHook,
     SyncHook,
 )

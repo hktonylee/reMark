@@ -225,7 +225,6 @@ class TestMultiDeviceConfigIsolation:
             lambda *a, **kw: object(),
         )
         monkeypatch.setattr("src.main._get_auth", lambda *a, **kw: object())
-        monkeypatch.setattr("src.main._get_ocr_pipeline", lambda _cfg, **kw: object())
 
         from src.sync.engine import SyncReport
 

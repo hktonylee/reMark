@@ -1,6 +1,5 @@
 """Embedding backend strategies for semantic search.
 
-Mirrors the pattern used by the OCR pipeline (strategy + fallback).
 All backends implement the EmbeddingBackend protocol, returning
 normalized float vectors.
 """

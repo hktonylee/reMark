@@ -10,7 +10,6 @@ import asyncio
 import logging
 
 from src.config import AppConfig
-from src.ocr.pipeline import OCRPipeline
 from src.remarkable.auth import AuthManager
 from src.remarkable.cloud import DocumentMetadata, RemarkableCloud
 from src.remarkable.documents import DocumentManager
@@ -35,14 +34,14 @@ class RealtimeWatcher:
         self._ws_config = config.sync.websocket
         self._running = False
 
-    async def watch(self, ocr_pipeline: OCRPipeline) -> None:
+    async def watch(self) -> None:
         """Connect to WebSocket and process events with reconnection."""
         self._running = True
         backoff = self._ws_config.reconnect_delay
 
         while self._running:
             try:
-                await self._watch_loop(ocr_pipeline)
+                await self._watch_loop()
             except Exception as e:
                 if not self._running:
                     break
@@ -55,7 +54,7 @@ class RealtimeWatcher:
 
         logger.info("Watcher stopped")
 
-    async def _watch_loop(self, ocr_pipeline: OCRPipeline) -> None:
+    async def _watch_loop(self) -> None:
         """Single WebSocket session — process events until disconnect."""
         async with RemarkableCloud(self._auth) as cloud:
             ws = RemarkableWebSocket(self._auth, cloud)
@@ -85,11 +84,7 @@ class RealtimeWatcher:
                     )
 
                     if event.event_type in ("DocAdded", "DocChanged"):
-                        await self._handle_document_change(
-                            event,
-                            cloud,
-                            ocr_pipeline,
-                        )
+                        await self._handle_document_change(event, cloud)
                     elif event.event_type == "DocDeleted":
                         logger.info("Document deleted: %s", event.doc_id[:8])
 
@@ -101,7 +96,6 @@ class RealtimeWatcher:
         self,
         event,
         cloud: RemarkableCloud,
-        ocr_pipeline: OCRPipeline,
     ) -> None:
         """Process a document change event."""
         doc = DocumentMetadata(
@@ -117,7 +111,7 @@ class RealtimeWatcher:
         download_dir = self._config.sync.state_db.replace("sync_state.db", "downloads")
         doc_manager = DocumentManager(cloud, download_dir)
 
-        result = await self._engine.process_document(doc, doc_manager, ocr_pipeline)
+        result = await self._engine.process_document(doc, doc_manager)
 
         if result.success:
             logger.info(

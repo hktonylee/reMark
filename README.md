@@ -8,9 +8,9 @@
 [![License: CC BY-NC 4.0](https://img.shields.io/badge/license-CC%20BY--NC%204.0-lightgrey.svg)](https://creativecommons.org/licenses/by-nc/4.0/)
 [![Non-Commercial](https://img.shields.io/badge/use-non--commercial-red.svg)](LICENSE)
 
-**Bidirectional sync between reMarkable tablets and an Obsidian knowledge base** with multi-engine OCR, intelligent note processing, semantic search, and automatic action item extraction.
+**Bidirectional sync between reMarkable tablets and an Obsidian knowledge base** with Codex page conversion, semantic search, and optional action item extraction.
 
-Write on your reMarkable. reMark handles the rest — your handwritten notes become structured, searchable Markdown in Obsidian (optionally mirrored to OneNote), complete with tags, summaries, and action items. Push responses back to the tablet, query your vault in natural language, drive Microsoft To Do / Calendar / Teams, and run the whole thing with a web dashboard + mobile PWA.
+Write on your reMarkable. Typed text and handwriting become searchable Markdown in Obsidian, with diagrams as inline SVG. Enable tags, summaries, action items, or a OneNote mirror as needed. Push responses back to the tablet, query your vault in natural language, drive Microsoft To Do / Calendar / Teams, and manage sync from the web dashboard and mobile PWA.
 
 > **Latest:** v0.8.0 — Offline & Scale: provider-agnostic LLM layer (Ollama or Anthropic), streaming downloads, batch embeddings, shared httpx pool, Bridge API v2 (note status, preview, vault search). Obsidian plugin now in the Community Store. See [CHANGELOG.md](CHANGELOG.md) for the full history.
 
@@ -29,8 +29,7 @@ Write on your reMarkable. reMark handles the rest — your handwritten notes bec
 ## Features
 
 ### Core sync & processing
-- **Multi-engine OCR pipeline** — reMarkable built-in (MyScript), Google Cloud Vision, or VLM-based recognition with automatic fallback
-- **Intelligent structuring** — raw handwriting becomes clean Markdown with inferred headings, lists, and formatting
+- **Page conversion** — local Codex CLI reads one image per page with typed text and pen strokes together, then returns Markdown with inline SVG
 - **Action item extraction** — tasks, questions, follow-ups from both text patterns and pen color annotations
 - **Auto-tagging** and **summarization** — categorizes and condenses notes
 - **Real-time sync** — WebSocket notifications or configurable cron schedule
@@ -57,14 +56,13 @@ Write on your reMarkable. reMark handles the rest — your handwritten notes bec
 - **Start on demand** via `remark-bridge serve-web`
 
 ### Extensibility
-- **Plugin system** _(v0.3)_ — custom action extractors, OCR backends, note post-processors, sync hooks. Load from a local directory or pip-installed packages.
+- **Plugin system** _(v0.3)_ — custom action extractors, note post-processors, sync hooks. Load from a local directory or pip-installed packages.
 
-### Offline-first with Ollama
+### Optional enrichment with Ollama
 
-Set `llm.provider: ollama` (or flip it from `/settings/llm`) and
-every LLM call — structuring, tagging, summaries, actions,
-reports, OCR VLM, embeddings — goes to a local Ollama server
-instead of Anthropic. See [`docs/OLLAMA.md`](docs/OLLAMA.md).
+Set `llm.provider: ollama` (or flip it from `/settings/llm`) to run tagging,
+summaries, action extraction, and reports on a local Ollama server. See
+[`docs/OLLAMA.md`](docs/OLLAMA.md).
 
 ### Performance
 
@@ -124,7 +122,7 @@ All shots are regenerated automatically on every release — see [.github/workfl
 │  Paper Pro / rM2  │    (sync 1.5 / JWT)        │                          │
 └──────────────────┘                              │  ┌────────────────────┐ │
         ▲                                         │  │ sync_engine        │ │
-        │                                         │  │  ├─ ocr_pipeline   │ │
+        │                                         │  │  ├─ codex exec      │ │
    (PDF│/notebook                                 │  │  ├─ processing     │ │
     push│back)                                    │  │  ├─ vault_writer   │ │
         │                                         │  │  ├─ search_indexer │ │
@@ -152,8 +150,9 @@ All shots are regenerated automatically on every release — see [.github/workfl
 ```
 1. DETECT    → New/changed notebook on reMarkable Cloud (poll or WebSocket)
 2. DOWNLOAD  → Fetch .rm files + metadata via sync 1.5 protocol
-3. CONVERT   → Extract text (CRDT → MyScript → primary OCR → fallback)
-4. PROCESS   → Structure, actions, tags, summary, optional Q&A
+3. CONVERT   → Render typed text and ink together. Send each page PNG to Codex.
+               Combine Markdown and inline SVG in notebook order.
+4. PROCESS   → Optional actions, tags, summary, and Q&A
 5. STORE     → Write Markdown + YAML frontmatter to Obsidian vault
                (optional parallel write to OneNote)
 6. INDEX     → Chunk and embed for semantic search (if enabled)
@@ -169,15 +168,18 @@ All shots are regenerated automatically on every release — see [.github/workfl
 - Python 3.11+
 - A reMarkable tablet (Paper Pro or reMarkable 2)
 - An Obsidian vault (local or Git-synced)
-- An [Anthropic API key](https://console.anthropic.com/) for note processing
-- (Optional) Google Cloud Vision credentials for OCR fallback
+- [Codex CLI](https://github.com/openai/codex) on `PATH`, signed in as the account running sync
+- (Optional) [Anthropic API key](https://console.anthropic.com/) for enrichment and response analysis
+
+The CLI runs on the sync host and sends page images to OpenAI for conversion.
+For conversion only, leave enrichment disabled and set `sync.push_responses: false`.
 
 ### VPS Deployment
 
 - Ubuntu 22.04+ or Debian 12+
-- 1 GB RAM minimum (2 GB recommended if using VLM OCR)
+- 1 GB RAM minimum
 - 10 GB disk (vault + state + downloaded .rm files)
-- Outbound HTTPS to `*.remarkable.com`, `api.anthropic.com`, `vision.googleapis.com`
+- Outbound HTTPS for reMarkable Cloud, Codex, and any enabled integrations
 
 ## Installation
 
@@ -195,7 +197,7 @@ cd reMark
 pip install .
 ```
 
-> **Note:** reMark requires `libcairo2` for SVG→PNG rendering. On Debian/Ubuntu: `sudo apt install libcairo2-dev`. On macOS: `brew install cairo`.
+> **Note:** reMark requires Cairo for page rendering. On Debian/Ubuntu, run `sudo apt install libcairo2-dev`. On macOS, run `brew install cairo`.
 
 ### With Docker
 
@@ -208,21 +210,21 @@ image so you don't need a local checkout to run it.
 curl -O https://raw.githubusercontent.com/BGGBTAC/reMark/main/docker-compose.yml
 curl -o .env https://raw.githubusercontent.com/BGGBTAC/reMark/main/.env.example
 
-# 2. Fill in .env — at minimum ANTHROPIC_API_KEY. Optionally pin
-#    REMARK_IMAGE_TAG=0.4.0 to freeze on a specific release.
+# 2. Fill in .env for any optional integrations.
 
 # 3. Prepare a config directory on the host
 mkdir -p config
 curl -o config/config.yaml https://raw.githubusercontent.com/BGGBTAC/reMark/main/config.example.yaml
 # edit config/config.yaml — at minimum set vault_path to /vault
 
-# 4. Pull and start both services
+# 4. Sign in to Codex inside the sync container and start both services.
+docker compose run --rm --no-deps --entrypoint codex sync login --device-auth
 docker compose up -d
 ```
 
 Prefer building from a checkout? The same compose file has a `build:`
-block as fallback — just run `docker compose build && docker compose up -d`
-from inside the repository.
+block as fallback. Run `docker compose build` before signing in and starting
+the services.
 
 The dashboard is reachable on <http://localhost:8000> (set `REMARK_WEB_PORT`
 in `.env` to change the host port). First-time reMarkable Cloud auth
@@ -233,8 +235,8 @@ docker compose exec sync remark-bridge auth
 docker compose logs -f sync
 ```
 
-Named volumes `vault` and `state` persist your Obsidian vault and the
-SQLite state DB across container recreates. Healthchecks hit `/healthz`,
+Named volumes `vault`, `state`, and `codex-auth` persist your Obsidian vault,
+SQLite state DB, and Codex sign-in across container recreates. Healthchecks hit `/healthz`,
 so `docker compose ps` flags a degraded deployment.
 
 **Available tags** on `ghcr.io/bggbtac/remark-bridge`:
@@ -248,6 +250,8 @@ so `docker compose ps` flags a degraded deployment.
 ## Setup
 
 ```bash
+codex login
+
 # Interactive setup — authenticates with reMarkable Cloud,
 # creates config, initializes vault structure and state DB
 remark-bridge setup
@@ -269,7 +273,6 @@ Key sections:
 |---------|-----------------|
 | `llm` | LLM provider (`anthropic` / `ollama`) + model selection |
 | `remarkable` | Cloud auth, folder filters, response folder |
-| `ocr` | Primary/fallback OCR engines, confidence threshold |
 | `processing` | Model selection, what to extract (actions, tags, summaries) |
 | `obsidian` | Vault path, folder mapping, Git sync settings |
 | `sync` | Trigger mode (realtime/scheduled/manual), streaming threshold |
@@ -382,7 +385,6 @@ reMark can be extended with user-written plugins. See **[docs/plugins.md](docs/p
 1. Create a `.py` file in `~/.config/remark/plugins/` (configurable via `plugins.plugin_dir`), or distribute a package exposing a `remark_bridge.plugins` entry point.
 2. Subclass one or more of the four hook types in [src/plugins/hooks.py](src/plugins/hooks.py):
    - `ActionExtractorHook` — emit extra action items from note text.
-   - `OCRBackendHook` — provide an additional OCR engine.
    - `NoteProcessorHook` — post-process the structured note before it's written to the vault.
    - `SyncHook` — observe sync lifecycle events (`before_sync`, `after_sync`, `after_document`).
 3. Each plugin must expose a `metadata` property returning a `PluginMetadata` dataclass with at least a unique `name`.
@@ -546,17 +548,11 @@ reMark/
 │   │   ├── cloud.py                # Cloud API client (sync 1.5)
 │   │   ├── documents.py            # Document listing, download, upload
 │   │   ├── websocket.py            # Real-time change notifications
-│   │   └── formats.py              # .rm file parsing (wraps rmscene)
-│   │
-│   ├── ocr/                        # Handwriting recognition pipeline
-│   │   ├── pipeline.py             # OCR orchestrator (strategy pattern)
-│   │   ├── remarkable_builtin.py   # MyScript conversion reader
-│   │   ├── google_vision.py        # Google Cloud Vision backend
-│   │   ├── vlm.py                  # Vision LLM backend (Anthropic / OpenAI / Ollama)
-│   │   └── renderer.py             # .rm → PNG/SVG rendering
+│   │   ├── formats.py              # .rm file parsing (wraps rmscene)
+│   │   └── renderer.py             # Combined typed text and ink → PNG
 │   │
 │   ├── processing/                 # Intelligent note processing
-│   │   ├── structurer.py           # Raw text → structured Markdown
+│   │   ├── codex.py                # Page image → Markdown + inline SVG
 │   │   ├── actions.py              # Action item extraction
 │   │   ├── tagger.py               # Auto-tagging
 │   │   ├── summarizer.py           # Note summarization
@@ -599,7 +595,7 @@ reMark/
 │   │       └── service.py          # High-level facade
 │   │
 │   ├── plugins/                    # Plugin system (v0.3)
-│   │   ├── hooks.py                # ActionExtractor / OCR / Processor / Sync
+│   │   ├── hooks.py                # ActionExtractor / Processor / Sync
 │   │   ├── registry.py             # Discovery + enable/disable
 │   │   └── examples/               # Reference plugins
 │   │

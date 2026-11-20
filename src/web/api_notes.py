@@ -10,10 +10,15 @@ from __future__ import annotations
 import hashlib
 import logging
 import time
+from io import BytesIO
 from pathlib import Path
 
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import Response
+from rmscene import read_tree
+
+from src.remarkable.formats import PageContent
+from src.remarkable.renderer import render_page_to_png
 
 logger = logging.getLogger(__name__)
 
@@ -61,38 +66,13 @@ def _resolve_vault_path(request: Request, vault_path: str) -> Path:
 
 
 def _render_first_page(rm_bytes: bytes) -> bytes:
-    """Render page 0 of an .rm document to PNG bytes.
-
-    Writes the bytes to a temporary file so the existing file-based renderer
-    can parse them without a separate code path.
-    """
-    import tempfile
-
-    from src.remarkable.formats import (  # type: ignore[attr-defined]
-        _render_ocr_svg,
-        _svg_to_png,
-        parse_rm_file,
-    )
-
-    with tempfile.NamedTemporaryFile(suffix=".rm", delete=False) as tmp:
-        tmp.write(rm_bytes)
-        tmp_path = Path(tmp.name)
-
+    """Render a cached .rm page to a PNG thumbnail."""
     try:
-        page = parse_rm_file(tmp_path)
+        page = PageContent(page_id="preview", tree=read_tree(BytesIO(rm_bytes)))
+        return render_page_to_png(page, scale=0.66)
     except Exception as exc:
-        logger.warning("failed to parse .rm bytes for preview: %s", exc)
+        logger.warning("failed to render .rm preview: %s", exc)
         raise HTTPException(status_code=500, detail="failed to render preview") from exc
-    finally:
-        tmp_path.unlink(missing_ok=True)
-
-    if not page.lines:
-        raise HTTPException(status_code=404, detail="page has no renderable content")
-
-    # Lower DPI is fine for preview thumbnails — faster, smaller response.
-    dpi = 150
-    svg = _render_ocr_svg(page.lines, dpi, high_contrast=False)
-    return _svg_to_png(svg, dpi)
 
 
 @router.get("/{vault_path:path}/status")

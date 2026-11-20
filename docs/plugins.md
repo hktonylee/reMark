@@ -39,11 +39,6 @@ plugin can implement any combination of them.
                           NoteProcessorHook.process
                           (last chance to mutate content + frontmatter)
                                     │
-                          ┌─────────────────────┐
-                          │   OCRBackendHook    │  ← used by the OCR pipeline
-                          │   .recognize_page   │    as a peer to built-in
-                          └─────────────────────┘    engines
-                                    │
                                     ▼
                           SyncHook.after_sync
 ```
@@ -116,8 +111,7 @@ async def extract(self, text: str, context: dict) -> list[dict]:
     ...
 ```
 
-- `text` — the structured Markdown content of the note (post-OCR +
-  processing, pre-write).
+- `text` — the note Markdown after page conversion.
 - `context` — currently `{}`, reserved for future metadata (note title,
   frontmatter snapshot, etc.).
 - Return a list of dicts; each dict should have at least a `"task"` key.
@@ -127,23 +121,6 @@ async def extract(self, text: str, context: dict) -> list[dict]:
 **Note:** as of v0.3 the built-in engine integrates plugin extractors as an
 addition, not a replacement. Your items are merged and deduplicated with
 those produced by `src.processing.actions.ActionExtractor`.
-
-### `OCRBackendHook`
-
-Provide an additional OCR engine. Currently invoked from the OCR pipeline
-as an option next to `remarkable_builtin`, `google_vision`, and `vlm`.
-
-```python
-async def recognize_page(self, page_image: bytes) -> dict:
-    return {
-        "text": "...",
-        "confidence": 0.85,       # 0..1
-        "engine": self.metadata.name,
-    }
-```
-
-Register the backend name in `config.ocr.primary` or `config.ocr.fallback`
-to make it part of the pipeline.
 
 ### `NoteProcessorHook`
 
@@ -328,11 +305,6 @@ with a link to the created issue. Add the issue URL to the frontmatter.
 Post a short message to a Slack webhook after each sync cycle with the
 count of processed notes and open action items.
 
-### Idea: Domain-specific OCR (`OCRBackendHook`)
-
-Route handwriting containing musical notation to a specialized model, or
-route math-heavy pages to a LaTeX-focused transcriber.
-
 ---
 
 ## Pitfalls & FAQ
@@ -341,8 +313,7 @@ route math-heavy pages to a LaTeX-focused transcriber.
 
 Run `remark-bridge plugins info <name>` and check that the correct hook
 classes are listed. If the hook is empty, double-check that your class
-subclasses one of `ActionExtractorHook`, `OCRBackendHook`,
-`NoteProcessorHook`, `SyncHook` — not `Plugin` directly.
+subclasses `ActionExtractorHook`, `NoteProcessorHook`, or `SyncHook`.
 
 ### `import src.plugins.hooks` fails.
 

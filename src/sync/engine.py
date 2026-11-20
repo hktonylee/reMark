@@ -1,6 +1,6 @@
 """Sync orchestrator — the main pipeline coordinator.
 
-Ties together all modules: Cloud API, OCR, processing, Obsidian vault,
+Ties together all modules: Cloud API, Codex conversion, processing, Obsidian vault,
 and state tracking into a single sync cycle.
 """
 
@@ -21,9 +21,8 @@ from src.obsidian.frontmatter import generate_frontmatter
 from src.obsidian.git_sync import GitSync
 from src.obsidian.templates import format_note_content
 from src.obsidian.vault import ObsidianVault
-from src.ocr.pipeline import OCRPipeline
 from src.processing.actions import ActionExtractor
-from src.processing.structurer import NoteStructurer
+from src.processing.codex import convert_page
 from src.processing.summarizer import NoteSummarizer
 from src.processing.tagger import NoteTagger
 from src.remarkable.cloud import DocumentMetadata, RemarkableCloud
@@ -43,7 +42,7 @@ def _cache_rm_bytes(doc_id: str, rm_bytes: bytes) -> None:
 
     Only the first page is stored — the preview endpoint renders page 0
     and doesn't need the full document. Writing it here, right after
-    download, means the file is available even when OCR or processing
+    download, means the file is available even when conversion or processing
     subsequently fail.
     """
     cache_dir = _RM_CACHE_ROOT / doc_id
@@ -90,7 +89,7 @@ class SyncEngine:
     One call to sync_once() runs a complete cycle:
     1. List documents from Cloud
     2. Filter to new/changed documents
-    3. Download, OCR, process, write to vault
+    3. Download, convert pages with Codex, write to vault
     4. Push pending responses
     5. Git commit + push
     """
@@ -173,7 +172,7 @@ class SyncEngine:
     def _get_llm_client(self) -> LLMClient:
         """Return the shared LLMClient, constructing it on first call.
 
-        All processing consumers (structurer, tagger, summarizer, extractor)
+        All enrichment consumers (tagger, summarizer, extractor)
         receive this rather than a raw vendor SDK client, so switching
         providers is a config-only operation.
         """
@@ -280,7 +279,6 @@ class SyncEngine:
         self,
         docs,
         doc_manager: DocumentManager,
-        ocr_pipeline: OCRPipeline,
         report: SyncReport,
     ) -> None:
         """Retry every due sync_queue entry once per cycle.
@@ -309,11 +307,7 @@ class SyncEngine:
                     self.state.mark_queue_done(queue_id)
                     continue
                 try:
-                    result = await self.process_document(
-                        doc,
-                        doc_manager,
-                        ocr_pipeline,
-                    )
+                    result = await self.process_document(doc, doc_manager)
                     if result.success:
                         self.state.mark_queue_done(queue_id)
                         report.processed.append(result)
@@ -332,7 +326,6 @@ class SyncEngine:
         self,
         cloud: RemarkableCloud,
         doc_manager: DocumentManager,
-        ocr_pipeline: OCRPipeline,
     ) -> SyncReport:
         """Run one full sync cycle."""
         start = time.monotonic()
@@ -386,11 +379,13 @@ class SyncEngine:
         # previous cycle enqueued an entry; we give it another shot
         # before picking up fresh work. Success = done, failure bumps
         # the attempts counter with exponential backoff.
-        await self._drain_queue(docs, doc_manager, ocr_pipeline, report)
+        await self._drain_queue(docs, doc_manager, report)
 
         # 4. Process each document
         for doc in to_process:
-            result = await self.process_document(doc, doc_manager, ocr_pipeline)
+            if not self.state.needs_sync(doc.id, doc.hash):
+                continue  # Already synced by the retry queue.
+            result = await self.process_document(doc, doc_manager)
             report.processed.append(result)
             if not result.success:
                 report.errors += 1
@@ -462,7 +457,6 @@ class SyncEngine:
         self,
         doc: DocumentMetadata,
         doc_manager: DocumentManager,
-        ocr_pipeline: OCRPipeline,
     ) -> ProcessResult:
         """Process a single document through the full pipeline."""
         start = time.monotonic()
@@ -500,19 +494,25 @@ class SyncEngine:
                 pages=pages,
             )
 
-            # OCR
-            ocr_results = await ocr_pipeline.recognize(
-                pages=pages,
-                doc_dir=resolved.local_dir,
-                doc_id=doc.id,
-                page_ids=resolved.page_ids,
-            )
+            page_markdown = [await convert_page(page) for page in pages]
+            note_markdown = "\n\n".join(markdown for markdown in page_markdown if markdown)
 
-            # Combine all text
-            raw_text = "\n\n".join(r.text for r in ocr_results if r.text.strip())
-
-            if not raw_text.strip():
-                logger.info("No text extracted from %s, skipping processing", doc.name)
+            if not note_markdown:
+                logger.info("No content on %s, skipping vault write", doc.name)
+                previous = self.state.get_doc_state(doc.id) or {}
+                self.state.mark_synced(
+                    doc_id=doc.id,
+                    doc_name=notebook.name,
+                    parent_folder=resolved.folder_path,
+                    cloud_hash=doc.hash,
+                    vault_path=previous.get("vault_path") or "",
+                    ocr_engine="codex" if pages else "",
+                    page_count=len(pages),
+                    action_count=previous.get("action_count") or 0,
+                    device_id=self._current_device_id,
+                    user_id=self._current_user_id,
+                )
+                doc_manager.cleanup(doc.id)
                 duration = int((time.monotonic() - start) * 1000)
                 return ProcessResult(
                     doc_id=doc.id,
@@ -522,42 +522,36 @@ class SyncEngine:
                     duration_ms=duration,
                 )
 
-            # Processing via configured LLM provider
-            llm = self._get_llm_client()
-            model = self._config.processing.model
-
-            structurer = NoteStructurer(llm=llm, model=model)
-            structured = await structurer.structure(raw_text, notebook.name)
+            # Optional enrichment reads the converted Markdown.
+            processing = self._config.processing
+            model = processing.model
 
             actions = []
-            if self._config.processing.extract_actions:
-                extractor = ActionExtractor(llm=llm, model=model)
+            if processing.extract_actions:
+                extractor = ActionExtractor(llm=self._get_llm_client(), model=model)
                 color_annotations = None
-                action_colors = self._config.processing.actions.action_colors
+                action_colors = processing.actions.action_colors
                 if action_colors:
-                    color_annotations = extract_strokes_by_color(
-                        resolved.local_dir, doc.id, resolved.page_ids, action_colors
-                    )
-                actions = await extractor.extract(structured.content_md, color_annotations)
+                    color_annotations = extract_strokes_by_color(pages, action_colors)
+                actions = await extractor.extract(note_markdown, color_annotations)
 
             tags = []
-            if self._config.processing.extract_tags:
+            if processing.extract_tags:
                 tagger = NoteTagger(
-                    llm=llm,
+                    llm=self._get_llm_client(),
                     model=model,
-                    hierarchical=self._config.processing.hierarchical_tags,
+                    hierarchical=processing.hierarchical_tags,
                 )
-                tags = await tagger.tag(structured.content_md, notebook.name)
+                tags = await tagger.tag(note_markdown, notebook.name)
 
             summary = None
-            if self._config.processing.generate_summary:
-                summarizer = NoteSummarizer(llm=llm, model=model)
-                summary = await summarizer.summarize(structured.content_md, notebook.name)
+            if processing.generate_summary:
+                summarizer = NoteSummarizer(llm=self._get_llm_client(), model=model)
+                summary = await summarizer.summarize(note_markdown, notebook.name)
 
             # Generate frontmatter
             frontmatter = generate_frontmatter(
                 notebook,
-                ocr_results,
                 actions,
                 tags,
                 summary_one_line=summary.one_line if summary else "",
@@ -565,10 +559,9 @@ class SyncEngine:
 
             # Format content
             content = format_note_content(
-                structured.content_md,
+                note_markdown,
                 summary=summary,
                 actions=actions,
-                page_texts=ocr_results,
             )
 
             # Template detection — if the synced doc was pushed as a template,
@@ -584,7 +577,7 @@ class SyncEngine:
                         if template is not None:
                             extracted = engine.extract_fields(
                                 template.name,
-                                structured.content_md,
+                                note_markdown,
                             )
                             if extracted:
                                 frontmatter["template"] = template.name
@@ -690,14 +683,13 @@ class SyncEngine:
                     logger.warning("Notion mirror failed for %s: %s", doc.name, e)
 
             # Update state
-            engines = list({r.engine_used for r in ocr_results if r.engine_used != "none"})
             self.state.mark_synced(
                 doc_id=doc.id,
                 doc_name=doc.name,
                 parent_folder=resolved.folder_path,
                 cloud_hash=doc.hash,
                 vault_path=str(vault_path),
-                ocr_engine=",".join(engines),
+                ocr_engine="codex",
                 page_count=len(pages),
                 action_count=len(actions),
                 device_id=self._current_device_id,
@@ -708,19 +700,14 @@ class SyncEngine:
             if self._config.sync.push_responses and self._config.response.auto_trigger:
                 from src.response.generator import should_auto_trigger
 
-                question_colors = self._config.processing.actions.question_colors
+                question_colors = processing.actions.question_colors
                 has_blue_questions = False
                 if question_colors:
-                    color_groups = extract_strokes_by_color(
-                        resolved.local_dir,
-                        doc.id,
-                        resolved.page_ids,
-                        question_colors,
-                    )
+                    color_groups = extract_strokes_by_color(pages, question_colors)
                     has_blue_questions = any(color_groups.values())
                 if should_auto_trigger(
                     self._config.response,
-                    structured.content_md,
+                    note_markdown,
                     has_color_questions=has_blue_questions,
                     action_count=len(actions),
                 ):
@@ -747,7 +734,7 @@ class SyncEngine:
                 vault_path=str(vault_path),
                 page_count=len(pages),
                 action_count=len(actions),
-                ocr_engine=",".join(engines),
+                ocr_engine="codex",
                 duration_ms=duration,
             )
 

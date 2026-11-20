@@ -59,8 +59,10 @@ services:
       - ./config:/config
       - vault:/vault
       - state:/state
+      - codex-auth:/home/remark/.codex
     command: ["sync"]
 
 volumes:
   vault:
   state:
+  codex-auth:

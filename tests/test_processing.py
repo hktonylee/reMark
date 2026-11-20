@@ -1,4 +1,4 @@
-"""Tests for note processing modules (structurer, actions, tagger, summarizer)."""
+"""Tests for note processing modules (actions, tagger, summarizer)."""
 
 import json
 from unittest.mock import AsyncMock, MagicMock
@@ -13,7 +13,6 @@ from src.processing.actions import (
     _merge_actions,
     _parse_action_response,
 )
-from src.processing.structurer import NoteStructurer, StructuredNote, _extract_title
 from src.processing.summarizer import NoteSummarizer, NoteSummary, _fallback_summary
 from src.processing.tagger import NoteTagger, _extract_keyword_tags, _parse_tag_response
 
@@ -51,81 +50,6 @@ def mock_anthropic_response(text: str) -> AsyncMock:
     response.content = [MagicMock(text=text)]
     client.messages.create = AsyncMock(return_value=response)
     return client
-
-
-# =====================
-# NoteStructurer
-# =====================
-
-
-class TestNoteStructurer:
-    @pytest.mark.asyncio
-    async def test_structure_returns_result(self):
-        llm = _StubLLM(text="# Meeting Notes\n\nDiscussed project timeline.")
-        structurer = NoteStructurer(llm=llm, model="claude-sonnet-4-20250514")
-
-        result = await structurer.structure(
-            "meeting notes discussed project timeline",
-            "Weekly Standup",
-        )
-
-        assert isinstance(result, StructuredNote)
-        assert result.title == "Meeting Notes"
-        assert "project timeline" in result.content_md
-
-    @pytest.mark.asyncio
-    async def test_structure_empty_text(self):
-        llm = _StubLLM(text="")
-        structurer = NoteStructurer(llm=llm, model="claude-sonnet-4-20250514")
-
-        result = await structurer.structure("", "Empty Notebook")
-
-        assert result.title == "Empty Notebook"
-        assert result.content_md == ""
-
-    @pytest.mark.asyncio
-    async def test_structure_incremental_empty_new(self):
-        llm = _StubLLM(text="")
-        structurer = NoteStructurer(llm=llm, model="claude-sonnet-4-20250514")
-
-        result = await structurer.structure_incremental("Existing content", "")
-        assert result == "Existing content"
-
-    @pytest.mark.asyncio
-    async def test_structure_uses_correct_model(self):
-        llm = _StubLLM(text="# Title\n\nContent")
-        structurer = NoteStructurer(llm=llm, model="claude-sonnet-4-20250514")
-
-        await structurer.structure("some text", "Test")
-
-        assert llm.calls
-        # third element of the recorded tuple is model
-        assert llm.calls[0][2] == "claude-sonnet-4-20250514"
-
-    @pytest.mark.asyncio
-    async def test_structurer_uses_llm_client(self):
-        llm = _StubLLM(text="# Title\n\nBody")
-        structurer = NoteStructurer(llm=llm, model="llama3.1")
-
-        out = await structurer.structure("handwritten text here", "My Notebook")
-
-        assert "Title" in out.content_md or "Body" in out.content_md
-        assert llm.calls
-        assert llm.calls[0][2] == "llama3.1"  # model forwarded correctly
-
-
-class TestExtractTitle:
-    def test_h1_heading(self):
-        assert _extract_title("# My Title\n\nContent") == "My Title"
-
-    def test_no_heading(self):
-        assert _extract_title("Just text without headings") is None
-
-    def test_h2_not_matched(self):
-        assert _extract_title("## Sub heading\nContent") is None
-
-    def test_empty(self):
-        assert _extract_title("") is None
 
 
 # =====================

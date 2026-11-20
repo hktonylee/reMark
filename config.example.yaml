@@ -35,36 +35,15 @@ remarkable:
   #     ignore_folders: ["Trash", "Archive"]
   devices: []
 
-ocr:
-  # Primary engine: "remarkable_builtin" | "google_vision" | "vlm" | "tesseract"
-  primary: "remarkable_builtin"
-
-  # Fallback engine (used when primary returns empty or low confidence)
-  fallback: "google_vision"
-
-  # VLM config (when using "vlm" as primary or fallback)
-  vlm:
-    provider: "anthropic"
-    model: "claude-sonnet-4-20250514"
-    prompt_template: "default"
-
-  # Google Vision config
-  google_vision:
-    credentials_path: "~/.remark-bridge/gcloud-credentials.json"
-    language_hints: ["en", "de"]
-
-  # Minimum confidence threshold (0.0-1.0) before using fallback
-  confidence_threshold: 0.7
-
 processing:
-  # Model for note processing (structuring, actions, tagging)
+  # Model for optional note enrichment and responses
   model: "claude-sonnet-4-20250514"
   api_key_env: "ANTHROPIC_API_KEY"
 
-  # What to extract
-  extract_actions: true
-  extract_tags: true
-  generate_summary: true
+  # Optional steps after Codex page conversion
+  extract_actions: false
+  extract_tags: false
+  generate_summary: false
 
   # Emit slash-separated hierarchical tags ("project/foo/milestone")
   # instead of flat ones. Affects new notes only; run
@@ -298,14 +277,12 @@ logging:
   # Can also be toggled at runtime via the REMARK_LOG_FORMAT env var.
   format: "text"
 
-# Pluggable LLM backend. Default is Anthropic (cloud). Set provider: ollama
-# for a fully offline stack — requires `ollama serve` running on the host
-# and models pulled (see docs/OLLAMA.md).
+# LLM backend for optional enrichment and reports. For Ollama, start
+# `ollama serve` and pull the models (see docs/OLLAMA.md).
 llm:
   provider: anthropic   # anthropic | ollama
   ollama:
     base_url: http://localhost:11434
     text_model: llama3.1
-    vision_model: llava
     embedding_model: nomic-embed-text
     timeout_seconds: 120

@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 import time
+from io import BytesIO
+from pathlib import Path
 
 from fastapi.testclient import TestClient
+from PIL import Image
 
 from src.config import AppConfig
 from src.sync.state import SyncState
@@ -115,17 +118,15 @@ class TestNotePreview:
         assert resp.status_code == 404
 
     def test_preview_returns_png_when_rm_present(self, tmp_path, monkeypatch):
-        """When load_last_rm_bytes returns bytes, render and return PNG."""
+        """A cached typed-only .rm page produces a visible preview."""
         import src.web.api_notes as api_notes_mod
 
         client, state, token = _make_env(tmp_path)
         _seed_sync_state(state, "Inbox/Note.md")
 
-        fake_rm = b"fake-rm-content"
-        fake_png = b"\x89PNG\r\n\x1a\n" + b"\x00" * 50
+        rm = (Path(__file__).parent / "fixtures" / "test-page-001.rm").read_bytes()
 
-        monkeypatch.setattr(state, "load_last_rm_bytes", lambda _p: fake_rm)
-        monkeypatch.setattr(api_notes_mod, "_render_first_page", lambda _b: fake_png)
+        monkeypatch.setattr(state, "load_last_rm_bytes", lambda _p: rm)
         api_notes_mod._PREVIEW_CACHE.clear()
 
         resp = client.get(
@@ -134,7 +135,8 @@ class TestNotePreview:
         )
         assert resp.status_code == 200
         assert resp.headers["content-type"] == "image/png"
-        assert resp.content.startswith(b"\x89PNG")
+        with Image.open(BytesIO(resp.content)) as preview:
+            assert preview.convert("L").getextrema() == (0, 255)
 
     def test_preview_caches_by_content_hash(self, tmp_path, monkeypatch):
         """The same .rm bytes should only be rendered once per cache window."""

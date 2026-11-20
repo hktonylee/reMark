@@ -14,7 +14,6 @@ def test_ollama_defaults_are_localhost():
     cfg = OllamaConfig()
     assert cfg.base_url == "http://localhost:11434"
     assert cfg.text_model == "llama3.1"
-    assert cfg.vision_model == "llava"
     assert cfg.embedding_model == "nomic-embed-text"
     assert cfg.timeout_seconds == 120.0
 

@@ -1,5 +1,11 @@
 # syntax=docker/dockerfile:1.7
 
+FROM node:22-bookworm-slim AS codex
+RUN npm install --prefix /opt/codex --no-audit --no-fund @openai/codex@0.171.0 \
+    && find /opt/codex/node_modules/@openai -path '*/vendor/*/bin/codex' -type f \
+        -exec cp {} /usr/local/bin/codex \; \
+    && test -x /usr/local/bin/codex
+
 # --- builder ----------------------------------------------------------------
 # Build wheels in an isolated stage so the runtime image stays small and
 # free of build toolchains.
@@ -10,7 +16,7 @@ ENV PIP_NO_CACHE_DIR=1 \
     PIP_ROOT_USER_ACTION=ignore \
     PYTHONDONTWRITEBYTECODE=1
 
-# Native deps needed to build numpy, cairosvg, cryptography, reportlab, etc.
+# Native deps needed to build numpy, cairocffi, cryptography, reportlab, etc.
 RUN apt-get update && apt-get install -y --no-install-recommends \
         build-essential \
         libcairo2-dev \
@@ -39,11 +45,12 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     REMARK_CONFIG=/config/config.yaml \
     REMARK_LOG_FORMAT=json
 
-# Runtime system libs only (no compilers). cairo is needed by cairosvg;
+# Runtime system libs only (no compilers). Cairo renders notebook pages;
 # git is needed for the Git-backed Obsidian vault sync; tini for signal
 # handling so uvicorn/asyncio shutdowns are clean.
 RUN apt-get update && apt-get install -y --no-install-recommends \
         ca-certificates \
+        fonts-dejavu-core \
         git \
         libcairo2 \
         libjpeg62-turbo \
@@ -51,13 +58,14 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/* \
     && useradd --system --create-home --uid 10001 --shell /usr/sbin/nologin remark
 
+COPY --from=codex /usr/local/bin/codex /usr/local/bin/codex
 COPY --from=builder /wheels /wheels
 RUN pip install --no-index --find-links=/wheels remark-bridge \
     && rm -rf /wheels
 
 # Directories for state, vault, and config. The compose file mounts
 # volumes on top of these.
-RUN mkdir -p /config /vault /state /home/remark/.remark-bridge \
+RUN mkdir -p /config /vault /state /home/remark/.remark-bridge /home/remark/.codex \
     && chown -R remark:remark /config /vault /state /home/remark
 
 USER remark

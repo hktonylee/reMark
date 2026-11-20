@@ -5,6 +5,21 @@ recent releases. The state DB is **always** additive — upgrading never
 requires a reindex, but some features unlock new behavior you may
 want to opt into.
 
+## Codex page conversion
+
+Install and sign in to Codex CLI as the account that runs sync. Docker
+installs Codex in the sync image and stores its sign-in in the
+`codex-auth` volume. Follow the login command in the README.
+
+Remove the old `ocr` and `llm.ollama.vision_model` settings, Cloud Vision
+credentials, and any `OCRBackendHook` plugins from your setup. To enable
+tags, summaries, or actions, set the corresponding `processing` flags
+and configure your enrichment provider.
+
+Existing notes and DB rows stay readable. New and changed notebook pages
+use Codex on the next sync. Use `remark-bridge process "<notebook name>"`
+to reconvert an individual notebook.
+
 ## → 0.6.5 (service release)
 
 **Nothing to do.** Patch release: security fixes, performance wins,

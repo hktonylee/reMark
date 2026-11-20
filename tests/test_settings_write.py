@@ -80,7 +80,7 @@ class TestFormBuilder:
         form = build_form(ProcessingConfig, ProcessingConfig())
         by_name = {f.name: f for f in form.fields}
         assert by_name["extract_actions"].kind == "bool"
-        assert by_name["extract_actions"].value is True
+        assert by_name["extract_actions"].value is False
 
     def test_literal_becomes_select_with_choices(self):
         form = build_form(SearchConfig, SearchConfig())

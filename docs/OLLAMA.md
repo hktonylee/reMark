@@ -1,9 +1,8 @@
-# Offline Setup with Ollama
+# Optional enrichment with Ollama
 
-reMark 0.8 can run without any cloud calls by routing every LLM
-call — note structuring, tagging, summarising, action extraction,
-reports, OCR VLM, embeddings — through a local
-[Ollama](https://ollama.com) server.
+Tagging, summaries, action extraction, and reports can use a local
+[Ollama](https://ollama.com) server. Notebook page conversion uses Codex.
+Response analysis uses Anthropic when enabled.
 
 ## 1. Install Ollama
 
@@ -14,8 +13,7 @@ Linux: `curl -fsSL https://ollama.com/install.sh | sh`
 ## 2. Pull the models
 
 ```bash
-ollama pull llama3.1           # note structuring, tagging, summaries, actions, reports
-ollama pull llava              # handwriting OCR (vision)
+ollama pull llama3.1           # tagging, summaries, actions, reports
 ollama pull nomic-embed-text   # semantic search embeddings
 ```
 
@@ -40,16 +38,14 @@ remark-bridge sync --once
 remark-bridge ask "what is in my last note"
 ```
 
-Both should complete without any outbound request to `api.anthropic.com`.
+For a sync run without Anthropic response analysis, set `response.include_analysis: false`.
 
 ## Hardware notes
 
 - A 7B-class text model (llama3.1:8b, mistral) needs ~8 GB RAM.
-- Vision models (llava) need ~12 GB RAM and benefit heavily from a GPU.
 - Embedding models (`nomic-embed-text`) are tiny — CPU is fine.
 
 ## Switching back
 
-Flip `llm.provider` back to `anthropic` (or remove the block) and
-reMark uses the cloud again. No data migration needed — the vault
-is identical regardless of provider.
+Set `llm.provider: anthropic` and `ANTHROPIC_API_KEY` to use Anthropic
+for enrichment.

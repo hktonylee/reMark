@@ -9,10 +9,9 @@ from src.obsidian.vault import (
     _parse_note,
     _sanitize_filename,
 )
-from src.ocr.pipeline import PageText
 from src.processing.actions import ActionItem
 from src.processing.summarizer import NoteSummary
-from src.remarkable.formats import Notebook, PageContent, TextBlock
+from src.remarkable.formats import Notebook, PageContent
 
 # =====================
 # _sanitize_filename
@@ -127,6 +126,14 @@ class TestObsidianVault:
         vault.write_note(path, {"title": "Deep"}, "Content")
         assert path.exists()
 
+    def test_codex_resync_replaces_legacy_ocr_metadata(self, tmp_path):
+        vault = ObsidianVault(tmp_path, {})
+        path = tmp_path / "note.md"
+        vault.write_note(path, {"ocr_engine": "crdt", "ocr_confidence": 0.9, "custom": "keep"}, "Old")
+        vault.write_note(path, {"ocr_engine": "codex"}, "Converted")
+
+        assert vault.read_note(path) == ({"ocr_engine": "codex", "custom": "keep"}, "Converted")
+
     def test_read_nonexistent(self, tmp_path):
         vault = ObsidianVault(tmp_path, {})
         assert vault.read_note(tmp_path / "nope.md") is None
@@ -202,18 +209,14 @@ class TestGenerateFrontmatter:
             folder="Work",
             modified="2026-04-13",
             pages=[
-                PageContent(page_id="p1", text_blocks=[TextBlock(text="text")]),
+                PageContent(page_id="p1"),
                 PageContent(page_id="p2"),
             ],
         )
-        ocr_results = [
-            PageText(page_id="p1", text="text", confidence=0.95, engine_used="crdt"),
-            PageText(page_id="p2", text="", confidence=0.0, engine_used="none"),
-        ]
         actions = [ActionItem(task="Do thing")]
         tags = ["meeting", "standup"]
 
-        fm = generate_frontmatter(notebook, ocr_results, actions, tags)
+        fm = generate_frontmatter(notebook, actions, tags)
 
         assert fm["title"] == "Weekly Standup"
         assert fm["source"] == "remarkable"
@@ -222,19 +225,8 @@ class TestGenerateFrontmatter:
         assert fm["action_items"] == 1
         assert fm["tags"] == ["meeting", "standup"]
         assert fm["status"] == "transcribed"
-        assert fm["ocr_confidence"] == 0.95  # only p1 has confidence > 0
-
-    def test_multiple_engines(self):
-        notebook = Notebook(id="x", name="N", folder="", modified="", pages=[])
-        ocr_results = [
-            PageText(page_id="p1", text="a", confidence=0.9, engine_used="crdt"),
-            PageText(page_id="p2", text="b", confidence=0.8, engine_used="google_vision"),
-        ]
-
-        fm = generate_frontmatter(notebook, ocr_results, [], [])
-        assert isinstance(fm["ocr_engine"], list)
-        assert "crdt" in fm["ocr_engine"]
-        assert "google_vision" in fm["ocr_engine"]
+        assert fm["ocr_engine"] == "codex"
+        assert "ocr_confidence" not in fm
 
 
 class TestUpdateFrontmatter:

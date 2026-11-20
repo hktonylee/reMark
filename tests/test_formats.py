@@ -6,7 +6,8 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from rmscene import simple_text_document, write_blocks
-from rmscene.scene_items import ParagraphStyle, PenColor
+from rmscene.scene_items import PenColor
+from rmscene.text import TextDocument
 
 from src.remarkable.documents import DocumentManager
 from src.remarkable.formats import (
@@ -14,9 +15,6 @@ from src.remarkable.formats import (
     INDEX_COLOR_MAP,
     Notebook,
     PageContent,
-    TextBlock,
-    extract_typed_text,
-    get_builtin_text_conversion,
     parse_notebook,
     parse_rm_file,
 )
@@ -34,6 +32,11 @@ def create_rm_fixture(path: Path, text: str) -> Path:
     with open(path, "wb") as f:
         write_blocks(f, blocks)
     return path
+
+
+def typed_lines(page: PageContent) -> list[str]:
+    text = page.tree.root_text
+    return [str(paragraph) for paragraph in TextDocument.from_scene_item(text).contents] if text else []
 
 
 def create_content_file(doc_dir: Path, doc_id: str, page_ids: list[str]) -> None:
@@ -55,15 +58,13 @@ class TestParseRmFile:
     def test_parse_text_content(self):
         page = parse_rm_file(FIXTURES / "test-page-001.rm")
 
-        assert page.has_text
-        assert not page.has_strokes
-        assert len(page.text_blocks) == 1
-        assert "Meeting Notes" in page.plain_text
-        assert "TODO: send report to team" in page.plain_text
+        assert not page.lines
+        assert "Meeting Notes" in typed_lines(page)
+        assert "TODO: send report to team" in typed_lines(page)
 
     def test_parse_text_preserves_lines(self):
         page = parse_rm_file(FIXTURES / "test-page-001.rm")
-        lines = page.plain_text.split("\n")
+        lines = typed_lines(page)
         assert len(lines) == 4
         assert lines[0] == "Meeting Notes"
         assert lines[3] == "Q: What is the deadline?"
@@ -76,15 +77,12 @@ class TestParseRmFile:
         page = parse_rm_file(rm_path)
 
         assert page.page_id == "page-abc"
-        assert page.has_text
-        assert "Hello World" in page.plain_text
-        assert "This is a test" in page.plain_text
+        assert typed_lines(page) == ["Hello World", "This is a test"]
 
     def test_parse_empty_text(self, tmp_path):
         rm_path = create_rm_fixture(tmp_path / "empty.rm", "")
         page = parse_rm_file(rm_path)
-        assert not page.has_text
-        assert page.plain_text == ""
+        assert not any(typed_lines(page))
 
     def test_page_id_from_filename(self):
         page = parse_rm_file(FIXTURES / "test-page-001.rm")
@@ -112,9 +110,9 @@ class TestParseNotebook:
         pages = parse_notebook(doc_dir, doc_id, page_ids)
 
         assert len(pages) == 3
-        assert "Page 1 content" in pages[0].plain_text
-        assert "Page 2 content" in pages[1].plain_text
-        assert "Page 3 content" in pages[2].plain_text
+        assert [typed_lines(page)[0] for page in pages] == [
+            "Page 1 content", "Page 2 content", "Page 3 content"
+        ]
 
     def test_missing_page_returns_empty(self, tmp_path):
         doc_dir = tmp_path / "doc-456"
@@ -123,89 +121,13 @@ class TestParseNotebook:
         pages = parse_notebook(doc_dir, "doc-456", ["nonexistent-page"])
 
         assert len(pages) == 1
-        assert not pages[0].has_text
-        assert not pages[0].has_strokes
+        assert not typed_lines(pages[0])
+        assert not pages[0].lines
 
-
-# -- extract_typed_text --
-
-
-class TestExtractTypedText:
-    def test_extracts_text_from_pages(self, tmp_path):
-        doc_id = "doc-text"
-        doc_dir = tmp_path / doc_id
-        doc_dir.mkdir()
-
-        page_ids = ["p1", "p2"]
-        create_rm_fixture(doc_dir / "p1.rm", "First page text")
-        create_rm_fixture(doc_dir / "p2.rm", "Second page text")
-
-        result = extract_typed_text(doc_dir, doc_id, page_ids)
-
-        assert "p1" in result
-        assert "p2" in result
-        assert result["p1"] == "First page text"
-        assert result["p2"] == "Second page text"
-
-    def test_skips_empty_pages(self, tmp_path):
-        doc_id = "doc-empty"
-        doc_dir = tmp_path / doc_id
-        doc_dir.mkdir()
-
-        create_rm_fixture(doc_dir / "p1.rm", "Has text")
-        create_rm_fixture(doc_dir / "p2.rm", "")
-
-        result = extract_typed_text(doc_dir, doc_id, ["p1", "p2"])
-
-        assert "p1" in result
-        assert "p2" not in result
-
-
-# -- get_builtin_text_conversion --
-
-
-class TestBuiltinTextConversion:
-    def test_reads_text_conversion(self, tmp_path):
-        doc_id = "doc-conv"
-        conv_dir = tmp_path / f"{doc_id}.textconversion"
-        conv_dir.mkdir()
-
-        (conv_dir / "page-1.json").write_text(json.dumps({"text": "Converted text here"}))
-        (conv_dir / "page-2.json").write_text(json.dumps({"text": "More converted text"}))
-
-        result = get_builtin_text_conversion(tmp_path, doc_id)
-
-        assert result is not None
-        assert result["page-1"] == "Converted text here"
-        assert result["page-2"] == "More converted text"
-
-    def test_reads_paragraph_format(self, tmp_path):
-        doc_id = "doc-para"
-        conv_dir = tmp_path / f"{doc_id}.textconversion"
-        conv_dir.mkdir()
-
-        data = {"paragraphs": [{"text": "First paragraph"}, {"text": "Second paragraph"}]}
-        (conv_dir / "page-1.json").write_text(json.dumps(data))
-
-        result = get_builtin_text_conversion(tmp_path, doc_id)
-
-        assert result is not None
-        assert "First paragraph" in result["page-1"]
-        assert "Second paragraph" in result["page-1"]
-
-    def test_returns_none_when_no_conversion(self, tmp_path):
-        result = get_builtin_text_conversion(tmp_path, "no-such-doc")
-        assert result is None
-
-    def test_skips_empty_text(self, tmp_path):
-        doc_id = "doc-empty"
-        conv_dir = tmp_path / f"{doc_id}.textconversion"
-        conv_dir.mkdir()
-
-        (conv_dir / "page-1.json").write_text(json.dumps({"text": ""}))
-
-        result = get_builtin_text_conversion(tmp_path, doc_id)
-        assert result is None
+    def test_corrupt_page_raises_instead_of_appearing_blank(self, tmp_path):
+        (tmp_path / "page-a.rm").write_bytes(b"invalid reMarkable page")
+        with pytest.raises(ValueError, match="Failed to parse reMarkable page page-a"):
+            parse_notebook(tmp_path, "doc", ["page-a"])
 
 
 # -- Color mapping --
@@ -221,35 +143,6 @@ class TestColorMapping:
     def test_index_color_roundtrip(self):
         for color, index in COLOR_INDEX_MAP.items():
             assert INDEX_COLOR_MAP[index] == color
-
-
-# -- TextBlock --
-
-
-class TestTextBlock:
-    def test_plain_text(self):
-        block = TextBlock(text="plain text")
-        assert block.to_markdown() == "plain text"
-
-    def test_heading(self):
-        block = TextBlock(text="Title", style=ParagraphStyle.HEADING)
-        assert block.to_markdown() == "# Title"
-
-    def test_bold(self):
-        block = TextBlock(text="important", style=ParagraphStyle.BOLD)
-        assert block.to_markdown() == "**important**"
-
-    def test_bullet(self):
-        block = TextBlock(text="item one", style=ParagraphStyle.BULLET)
-        assert block.to_markdown() == "- item one"
-
-    def test_checkbox(self):
-        block = TextBlock(text="task", style=ParagraphStyle.CHECKBOX)
-        assert block.to_markdown() == "- [ ] task"
-
-    def test_checkbox_checked(self):
-        block = TextBlock(text="done", style=ParagraphStyle.CHECKBOX_CHECKED)
-        assert block.to_markdown() == "- [x] done"
 
 
 # -- DocumentManager --
@@ -369,20 +262,13 @@ class TestDocumentManager:
 
 
 class TestNotebook:
-    def test_all_text_concatenation(self):
-        pages = [
-            PageContent(page_id="p1", text_blocks=[TextBlock(text="Page one")]),
-            PageContent(page_id="p2"),  # empty page
-            PageContent(page_id="p3", text_blocks=[TextBlock(text="Page three")]),
-        ]
+    def test_page_count_includes_blank_pages(self):
+        pages = [PageContent(page_id="p1"), PageContent(page_id="p2")]
 
         nb = Notebook(id="nb1", name="Test", folder="", modified="", pages=pages)
 
-        assert nb.page_count == 3
-        assert "Page one" in nb.all_text
-        assert "Page three" in nb.all_text
+        assert nb.page_count == 2
 
     def test_empty_notebook(self):
         nb = Notebook(id="nb2", name="Empty", folder="", modified="", pages=[])
         assert nb.page_count == 0
-        assert nb.all_text == ""

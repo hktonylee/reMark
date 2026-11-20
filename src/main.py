@@ -52,12 +52,6 @@ def _get_auth(config: AppConfig, device_id: str = "default"):
     return AuthManager(device_token_path_for(device_id, base_dir))
 
 
-def _get_ocr_pipeline(config: AppConfig, llm_client=None):
-    from src.ocr.pipeline import build_pipeline
-
-    return build_pipeline(config, llm_client=llm_client)
-
-
 @click.group()
 @click.option(
     "--config",
@@ -186,7 +180,6 @@ async def _sync_once(config: AppConfig) -> None:
     from src.sync.engine import SyncEngine
 
     engine = SyncEngine(config)
-    ocr_pipeline = _get_ocr_pipeline(config, llm_client=engine._get_llm_client())
     download_dir = resolve_path(config.sync.state_db).parent / "downloads"
 
     # Legacy single-device path: no ``devices`` list configured, run once.
@@ -195,7 +188,7 @@ async def _sync_once(config: AppConfig) -> None:
         auth = _get_auth(config)
         async with RemarkableCloud(auth) as cloud:
             doc_manager = DocumentManager(cloud, download_dir)
-            report = await engine.sync_once(cloud, doc_manager, ocr_pipeline)
+            report = await engine.sync_once(cloud, doc_manager)
         click.echo(
             f"Sync complete: {report.success_count} processed, "
             f"{report.skipped} skipped, {report.errors} errors "
@@ -236,7 +229,7 @@ async def _sync_once(config: AppConfig) -> None:
 
         async with RemarkableCloud(auth) as cloud:
             doc_manager = DocumentManager(cloud, download_dir)
-            report = await device_engine.sync_once(cloud, doc_manager, ocr_pipeline)
+            report = await device_engine.sync_once(cloud, doc_manager)
         device_engine.state.touch_device(device.id)
         click.echo(
             f"  {device.label}: {report.success_count} processed, "
@@ -255,13 +248,12 @@ async def _sync_continuous(config: AppConfig) -> None:
 
     auth = _get_auth(config)
     engine = SyncEngine(config)
-    ocr_pipeline = _get_ocr_pipeline(config, llm_client=engine._get_llm_client())
     scheduler = SyncScheduler(engine, config)
 
     click.echo("Starting continuous sync (Ctrl+C to stop)...")
 
     try:
-        await scheduler.run(auth, ocr_pipeline)
+        await scheduler.run(auth)
     except KeyboardInterrupt:
         click.echo("\nStopping...")
         scheduler.stop()
@@ -283,13 +275,12 @@ async def _watch(config: AppConfig) -> None:
 
     auth = _get_auth(config)
     engine = SyncEngine(config)
-    ocr_pipeline = _get_ocr_pipeline(config, llm_client=engine._get_llm_client())
     watcher = RealtimeWatcher(engine, auth, config)
 
     click.echo("Starting real-time watcher (Ctrl+C to stop)...")
 
     try:
-        await watcher.watch(ocr_pipeline)
+        await watcher.watch()
     except KeyboardInterrupt:
         click.echo("\nStopping...")
         watcher.stop()
@@ -427,7 +418,6 @@ async def _process_single(config: AppConfig, notebook_name: str) -> None:
 
     auth = _get_auth(config)
     engine = SyncEngine(config)
-    ocr_pipeline = _get_ocr_pipeline(config, llm_client=engine._get_llm_client())
     download_dir = resolve_path(config.sync.state_db).parent / "downloads"
 
     async with RemarkableCloud(auth) as cloud:
@@ -444,7 +434,7 @@ async def _process_single(config: AppConfig, notebook_name: str) -> None:
             click.echo(f"Notebook '{notebook_name}' not found on reMarkable.")
             return
 
-        result = await engine.process_document(target, doc_manager, ocr_pipeline)
+        result = await engine.process_document(target, doc_manager)
 
     if result.success:
         click.echo(f"Done: {result.page_count} pages, {result.action_count} actions")
@@ -790,15 +780,10 @@ def plugins_info(ctx: click.Context, name: str) -> None:
         click.echo(f"Description: {meta.description}")
     if meta.author:
         click.echo(f"Author: {meta.author}")
-    from src.plugins.hooks import (
-        ActionExtractorHook,
-        NoteProcessorHook,
-        OCRBackendHook,
-        SyncHook,
-    )
+    from src.plugins.hooks import ActionExtractorHook, NoteProcessorHook, SyncHook
 
     hooks = []
-    for cls in (ActionExtractorHook, OCRBackendHook, NoteProcessorHook, SyncHook):
+    for cls in (ActionExtractorHook, NoteProcessorHook, SyncHook):
         if isinstance(plugin, cls):
             hooks.append(cls.__name__)
     click.echo(f"Hooks: {', '.join(hooks) or '(none)'}")
@@ -954,16 +939,23 @@ def _run_doctor(config: AppConfig) -> None:
             )
         )
 
-    # Anthropic API key
-    env_var = config.processing.api_key_env
-    api_key = os.environ.get(env_var, "")
-    checks.append(
-        (
-            f"Anthropic API key ({env_var})",
-            bool(api_key),
-            "set" if api_key else "not set",
+    codex = shutil.which("codex")
+    checks.append(("Codex CLI", bool(codex), codex or "install Codex and run 'codex login'"))
+
+    # Check provider credentials when a sync feature uses them.
+    processing = config.processing
+    required_keys = set()
+    if config.llm.provider == "anthropic" and (
+        processing.extract_actions or processing.extract_tags or processing.generate_summary
+    ):
+        required_keys.add("ANTHROPIC_API_KEY")
+    if config.sync.push_responses and config.response.include_analysis:
+        required_keys.add(processing.api_key_env)
+    for env_var in sorted(required_keys):
+        api_key = os.environ.get(env_var, "")
+        checks.append(
+            (f"Anthropic API key ({env_var})", bool(api_key), "set" if api_key else "not set")
         )
-    )
 
     # State DB
     state_db = resolve_path(config.sync.state_db)
@@ -986,7 +978,7 @@ def _run_doctor(config: AppConfig) -> None:
         pass
     checks.append(
         (
-            "libcairo2 (for SVG→PNG)",
+            "libcairo2 (for page rendering)",
             cairo_ok,
             "loaded" if cairo_ok else "install libcairo2-dev",
         )
@@ -1277,12 +1269,11 @@ async def _migrate_all(config: AppConfig) -> None:
 
     auth = _get_auth(config)
     engine = SyncEngine(config)
-    ocr_pipeline = _get_ocr_pipeline(config, llm_client=engine._get_llm_client())
     download_dir = resolve_path(config.sync.state_db).parent / "downloads"
 
     async with RemarkableCloud(auth) as cloud:
         doc_manager = DocumentManager(cloud, download_dir)
-        report = await engine.sync_once(cloud, doc_manager, ocr_pipeline)
+        report = await engine.sync_once(cloud, doc_manager)
 
     click.echo(
         f"\nMigration complete: {report.success_count} imported, "

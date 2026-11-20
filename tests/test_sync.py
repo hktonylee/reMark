@@ -1,37 +1,13 @@
 """Tests for sync state, engine, and scheduler."""
 
-from unittest.mock import AsyncMock, MagicMock, patch
+from pathlib import Path
+from unittest.mock import AsyncMock, MagicMock, call, patch
 
 import pytest
+from rmscene import simple_text_document, write_blocks
 
-from src.llm.client import LLMClient, LLMResponse
 from src.sync.scheduler import _parse_interval
 from src.sync.state import SyncState
-
-
-class _StubLLM(LLMClient):
-    """Minimal LLMClient that returns canned responses for testing."""
-
-    provider = "stub"
-
-    async def complete(self, system, messages, model, max_tokens=4096):
-        return LLMResponse(
-            text="# New Note\n\nTest content",
-            input_tokens=1,
-            output_tokens=1,
-            provider=self.provider,
-            model=model,
-        )
-
-    async def complete_vision(self, system, image, prompt, model, max_tokens=2048):
-        return LLMResponse(
-            text="stub ocr text",
-            input_tokens=1,
-            output_tokens=1,
-            provider=self.provider,
-            model=model,
-        )
-
 
 # =====================
 # SyncState
@@ -319,32 +295,27 @@ class TestSyncEngine:
             ]
         )
 
-        ocr_pipeline = AsyncMock()
-
-        report = await engine.sync_once(cloud, doc_manager, ocr_pipeline)
+        report = await engine.sync_once(cloud, doc_manager)
 
         assert report.skipped == 1
         assert report.total == 0
         assert report.errors == 0
 
     @pytest.mark.asyncio
-    async def test_sync_once_processes_new_doc(self, tmp_path):
+    @pytest.mark.parametrize("outcome", ["converted", "blank", "failed"])
+    async def test_sync_once_converts_each_page(self, tmp_path, monkeypatch, outcome):
         from src.config import AppConfig
-        from src.ocr.pipeline import PageText
         from src.remarkable.cloud import DocumentMetadata
         from src.remarkable.documents import ResolvedDocument
-        from src.remarkable.formats import PageContent, TextBlock
         from src.sync.engine import SyncEngine
 
         config = AppConfig()
         config.sync.state_db = str(tmp_path / "state.db")
         config.obsidian.vault_path = str(tmp_path / "vault")
         config.obsidian.git.enabled = False
-        config.processing.extract_actions = False
-        config.processing.extract_tags = False
-        config.processing.generate_summary = False
 
         engine = SyncEngine(config)
+        monkeypatch.setattr("src.sync.engine._RM_CACHE_ROOT", tmp_path / "cache")
 
         new_doc = DocumentMetadata(
             id="doc-new",
@@ -356,16 +327,18 @@ class TestSyncEngine:
             modified="2026-04-13",
         )
 
-        # Mock doc_manager
         doc_dir = tmp_path / "downloads" / "doc-new"
         doc_dir.mkdir(parents=True)
+        for page_id in ("p2", "p1"):
+            with (doc_dir / f"{page_id}.rm").open("wb") as output:
+                write_blocks(output, simple_text_document(page_id))
 
         resolved = ResolvedDocument(
             meta=new_doc,
             local_dir=doc_dir,
             folder_path="Work",
-            page_ids=["p1"],
-            page_count=1,
+            page_ids=["p2", "p1"],
+            page_count=2,
         )
 
         doc_manager = AsyncMock()
@@ -373,30 +346,44 @@ class TestSyncEngine:
         doc_manager.download = AsyncMock(return_value=resolved)
         doc_manager.cleanup = MagicMock()
 
-        # Mock OCR pipeline
-        ocr_pipeline = AsyncMock()
-        ocr_pipeline.recognize = AsyncMock(
-            return_value=[
-                PageText(page_id="p1", text="Test content", confidence=1.0, engine_used="crdt"),
-            ]
-        )
-
         cloud = AsyncMock()
-
+        svg = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 5 5"><path d="M0 0 L5 5"/></svg>'
+        page_results = [f"## First page\n\n{svg}", "Second page"]
+        responses = {
+            "converted": page_results,
+            "blank": ["", ""],
+            "failed": [page_results[0], RuntimeError("Codex could not convert page p1")],
+        }
+        convert = AsyncMock(side_effect=responses[outcome])
         with (
-            patch(
-                "src.sync.engine.parse_notebook",
-                return_value=[PageContent(page_id="p1", text_blocks=[TextBlock(text="Test")])],
-            ),
-            patch("src.sync.engine.build_llm_client", return_value=_StubLLM()),
+            patch("src.sync.engine.convert_page", convert),
+            patch("src.sync.engine.build_llm_client") as build_llm,
         ):
-            report = await engine.sync_once(cloud, doc_manager, ocr_pipeline)
+            report = await engine.sync_once(cloud, doc_manager)
+            assert [entry.args[0].page_id for entry in convert.await_args_list] == ["p2", "p1"]
+            build_llm.assert_not_called()
+            if outcome == "failed":
+                assert report.errors == 1
+                assert not list(Path(config.obsidian.vault_path).rglob("*.md"))
+                assert engine.state.needs_sync("doc-new", "new-hash")
+                assert len(engine.state.dequeue_ready()) == 1
+                convert.reset_mock()
+                convert.side_effect = page_results
+                report = await engine.sync_once(cloud, doc_manager)
+                assert convert.await_count == 2
+                assert engine.state.dequeue_ready() == []
 
-        assert report.success_count == 1
-        assert report.skipped == 0
-
-        # Doc should now be in state
+        result, = report.processed
+        assert result.success
+        assert result.page_count == 2
         assert not engine.state.needs_sync("doc-new", "new-hash")
+        assert doc_manager.cleanup.call_args == call("doc-new")
+        if outcome == "blank":
+            assert not list(Path(config.obsidian.vault_path).rglob("*.md"))
+        else:
+            frontmatter, content = engine.vault.read_note(Path(result.vault_path))
+            assert frontmatter["ocr_engine"] == "codex"
+            assert content == "\n\n".join(page_results)
 
 
 # =====================

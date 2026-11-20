@@ -34,16 +34,9 @@ class RemarkableConfig(BaseModel):
     devices: list[DeviceConfig] = Field(default_factory=list)
 
 
-class VLMConfig(BaseModel):
-    provider: Literal["anthropic", "openai"] = "anthropic"
-    model: str = "claude-sonnet-4-20250514"
-    prompt_template: str = "default"
-
-
 class OllamaConfig(BaseModel):
     base_url: str = "http://localhost:11434"
     text_model: str = "llama3.1"
-    vision_model: str = "llava"
     embedding_model: str = "nomic-embed-text"
     timeout_seconds: float = 120.0
 
@@ -51,22 +44,6 @@ class OllamaConfig(BaseModel):
 class LLMConfig(BaseModel):
     provider: Literal["anthropic", "ollama"] = "anthropic"
     ollama: OllamaConfig = Field(default_factory=OllamaConfig)
-
-
-class GoogleVisionConfig(BaseModel):
-    credentials_path: str = "~/.remark-bridge/gcloud-credentials.json"
-    language_hints: list[str] = Field(default_factory=lambda: ["en", "de"])
-
-
-_OCR_ENGINES = Literal["remarkable_builtin", "google_vision", "vlm", "tesseract"]
-
-
-class OCRConfig(BaseModel):
-    primary: _OCR_ENGINES = "remarkable_builtin"
-    fallback: _OCR_ENGINES | Literal["none"] = "google_vision"
-    vlm: VLMConfig = Field(default_factory=VLMConfig)
-    google_vision: GoogleVisionConfig = Field(default_factory=GoogleVisionConfig)
-    confidence_threshold: float = 0.7
 
 
 class ActionConfig(BaseModel):
@@ -79,10 +56,10 @@ class ActionConfig(BaseModel):
 class ProcessingConfig(BaseModel):
     model: str = "claude-sonnet-4-20250514"
     api_key_env: str = "ANTHROPIC_API_KEY"
-    extract_actions: bool = True
-    extract_tags: bool = True
+    extract_actions: bool = False
+    extract_tags: bool = False
     hierarchical_tags: bool = False  # slash-separated tags like "project/foo/bar"
-    generate_summary: bool = True
+    generate_summary: bool = False
     actions: ActionConfig = Field(default_factory=ActionConfig)
 
 
@@ -305,7 +282,6 @@ class LoggingConfig(BaseModel):
 
 class AppConfig(BaseModel):
     remarkable: RemarkableConfig = Field(default_factory=RemarkableConfig)
-    ocr: OCRConfig = Field(default_factory=OCRConfig)
     processing: ProcessingConfig = Field(default_factory=ProcessingConfig)
     obsidian: ObsidianConfig = Field(default_factory=ObsidianConfig)
     sync: SyncConfig = Field(default_factory=SyncConfig)

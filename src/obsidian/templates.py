@@ -6,7 +6,6 @@ the final Markdown output written to the vault.
 
 from __future__ import annotations
 
-from src.ocr.pipeline import PageText
 from src.processing.actions import ActionItem
 from src.processing.summarizer import NoteSummary
 
@@ -15,7 +14,6 @@ def format_note_content(
     structured_md: str,
     summary: NoteSummary | None = None,
     actions: list[ActionItem] | None = None,
-    page_texts: list[PageText] | None = None,
 ) -> str:
     """Build the full Markdown content for a vault note.
 
@@ -57,15 +55,6 @@ def format_note_content(
                 line += f" (due: {action.deadline})"
             parts.append(line)
         parts.append("")
-
-    # OCR metadata footer (collapsed)
-    if page_texts:
-        engines = list({pt.engine_used for pt in page_texts if pt.engine_used != "none"})
-        avg_conf = sum(pt.confidence for pt in page_texts) / len(page_texts) if page_texts else 0
-        if engines:
-            parts.append("---")
-            parts.append(f"*OCR: {', '.join(engines)} (confidence: {avg_conf:.0%})*")
-            parts.append("")
 
     return "\n".join(parts)
 

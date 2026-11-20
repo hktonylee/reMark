@@ -8,11 +8,11 @@
 [![License: CC BY-NC 4.0](https://img.shields.io/badge/license-CC%20BY--NC%204.0-lightgrey.svg)](https://creativecommons.org/licenses/by-nc/4.0/)
 [![Non-Commercial](https://img.shields.io/badge/use-non--commercial-red.svg)](LICENSE)
 
-**Bidirectional sync between reMarkable tablets and an Obsidian knowledge base** with multi-engine OCR, intelligent note processing, semantic search, and automatic action item extraction.
+**Bidirectional sync between reMarkable tablets and an Obsidian knowledge base** with Codex page conversion, semantic search, and optional action item extraction.
 
-Write on your reMarkable. reMark handles the rest — your handwritten notes become structured, searchable Markdown in Obsidian (optionally mirrored to OneNote), complete with tags, summaries, and action items. Push responses back to the tablet, query your vault in natural language, drive Microsoft To Do / Calendar / Teams, and run the whole thing with a web dashboard + mobile PWA.
+Write on your reMarkable. Typed text and handwriting become searchable Markdown in Obsidian, with diagrams as inline SVG. Enable tags, summaries, action items, or a OneNote mirror as needed. Push responses back to the tablet, query your vault in natural language, drive Microsoft To Do / Calendar / Teams, and manage sync from the web dashboard and mobile PWA.
 
-> **Latest:** v0.8.0 — Offline & Scale: provider-agnostic LLM layer (Ollama or Anthropic), streaming downloads, batch embeddings, shared httpx pool, Bridge API v2 (note status, preview, vault search). Obsidian plugin now in the Community Store. See [CHANGELOG.md](CHANGELOG.md) for the full history.
+> Codex page conversion is available in this source checkout. See [CHANGELOG.md](CHANGELOG.md) for release history.
 
 <p align="center">
   <a href="https://github.com/BGGBTAC/reMark/wiki/Web-Dashboard">
@@ -29,9 +29,8 @@ Write on your reMarkable. reMark handles the rest — your handwritten notes bec
 ## Features
 
 ### Core sync & processing
-- **Multi-engine OCR pipeline** — reMarkable built-in (MyScript), Google Cloud Vision, or VLM-based recognition with automatic fallback
-- **Intelligent structuring** — raw handwriting becomes clean Markdown with inferred headings, lists, and formatting
-- **Action item extraction** — tasks, questions, follow-ups from both text patterns and pen color annotations
+- **Page conversion** — local Codex CLI reads one image per page with typed text and pen strokes together, then returns Markdown with inline SVG
+- **Optional action item extraction** — finds tasks, questions, and follow-ups in converted Markdown and uses configured pen colors as additional cues
 - **Auto-tagging** and **summarization** — categorizes and condenses notes
 - **Real-time sync** — WebSocket notifications or configurable cron schedule
 
@@ -57,14 +56,13 @@ Write on your reMarkable. reMark handles the rest — your handwritten notes bec
 - **Start on demand** via `remark-bridge serve-web`
 
 ### Extensibility
-- **Plugin system** _(v0.3)_ — custom action extractors, OCR backends, note post-processors, sync hooks. Load from a local directory or pip-installed packages.
+- **Plugin system** _(v0.3)_ — custom action extractors, note post-processors, sync hooks. Load from a local directory or pip-installed packages.
 
-### Offline-first with Ollama
+### Optional enrichment with Ollama
 
-Set `llm.provider: ollama` (or flip it from `/settings/llm`) and
-every LLM call — structuring, tagging, summaries, actions,
-reports, OCR VLM, embeddings — goes to a local Ollama server
-instead of Anthropic. See [`docs/OLLAMA.md`](docs/OLLAMA.md).
+Set `llm.provider: ollama` (or flip it from `/settings/llm`) to run tagging,
+summaries, action extraction, and reports on a local Ollama server. See
+[`docs/OLLAMA.md`](docs/OLLAMA.md).
 
 ### Performance
 
@@ -124,7 +122,7 @@ All shots are regenerated automatically on every release — see [.github/workfl
 │  Paper Pro / rM2  │    (sync 1.5 / JWT)        │                          │
 └──────────────────┘                              │  ┌────────────────────┐ │
         ▲                                         │  │ sync_engine        │ │
-        │                                         │  │  ├─ ocr_pipeline   │ │
+        │                                         │  │  ├─ codex exec      │ │
    (PDF│/notebook                                 │  │  ├─ processing     │ │
     push│back)                                    │  │  ├─ vault_writer   │ │
         │                                         │  │  ├─ search_indexer │ │
@@ -152,8 +150,9 @@ All shots are regenerated automatically on every release — see [.github/workfl
 ```
 1. DETECT    → New/changed notebook on reMarkable Cloud (poll or WebSocket)
 2. DOWNLOAD  → Fetch .rm files + metadata via sync 1.5 protocol
-3. CONVERT   → Extract text (CRDT → MyScript → primary OCR → fallback)
-4. PROCESS   → Structure, actions, tags, summary, optional Q&A
+3. CONVERT   → Render typed text and ink together. Send each page PNG to Codex.
+               Combine Markdown and inline SVG in notebook order.
+4. PROCESS   → Optional actions, tags, summary, and Q&A
 5. STORE     → Write Markdown + YAML frontmatter to Obsidian vault
                (optional parallel write to OneNote)
 6. INDEX     → Chunk and embed for semantic search (if enabled)
@@ -169,60 +168,58 @@ All shots are regenerated automatically on every release — see [.github/workfl
 - Python 3.11+
 - A reMarkable tablet (Paper Pro or reMarkable 2)
 - An Obsidian vault (local or Git-synced)
-- An [Anthropic API key](https://console.anthropic.com/) for note processing
-- (Optional) Google Cloud Vision credentials for OCR fallback
+- [Codex CLI](https://github.com/openai/codex) on `PATH`, signed in as the account running sync
+- (Optional) [Anthropic API key](https://console.anthropic.com/) for enrichment and response analysis
+
+The CLI runs on the sync host and sends page images to OpenAI for conversion.
+It transcribes text and redraws diagrams as inline SVG. reMark joins nonblank
+pages in notebook order and writes one Markdown file with YAML frontmatter.
 
 ### VPS Deployment
 
 - Ubuntu 22.04+ or Debian 12+
-- 1 GB RAM minimum (2 GB recommended if using VLM OCR)
+- 1 GB RAM minimum
 - 10 GB disk (vault + state + downloaded .rm files)
-- Outbound HTTPS to `*.remarkable.com`, `api.anthropic.com`, `vision.googleapis.com`
+- Outbound HTTPS for reMarkable Cloud, Codex, and any enabled integrations
 
 ## Installation
 
-### From PyPI (recommended)
+### From PyPI
 
 ```bash
 pip install remark-bridge
 ```
 
+To use Codex page conversion before a package release includes it, install
+from a checkout containing the change.
+
 ### From source
 
 ```bash
-git clone https://github.com/BGGBTAC/reMark.git
-cd reMark
+# Run from the reMark checkout.
 pip install .
 ```
 
-> **Note:** reMark requires `libcairo2` for SVG→PNG rendering. On Debian/Ubuntu: `sudo apt install libcairo2-dev`. On macOS: `brew install cairo`.
+> **Note:** reMark requires Cairo for page rendering. On Debian/Ubuntu, run `sudo apt install libcairo2-dev`. On macOS, run `brew install cairo`.
 
 ### With Docker
 
-Every release auto-publishes a multi-arch container to GitHub Container
-Registry. The shipped `docker-compose.yml` defaults to pulling that
-image so you don't need a local checkout to run it.
+Build from the checkout to use Codex page conversion before it ships in
+the published image. The Dockerfile includes the Codex CLI.
 
 ```bash
-# 1. Grab the compose file and env template
-curl -O https://raw.githubusercontent.com/BGGBTAC/reMark/main/docker-compose.yml
-curl -o .env https://raw.githubusercontent.com/BGGBTAC/reMark/main/.env.example
+# Run from the reMark checkout. Fill in .env for any optional integrations.
+cp .env.example .env
 
-# 2. Fill in .env — at minimum ANTHROPIC_API_KEY. Optionally pin
-#    REMARK_IMAGE_TAG=0.4.0 to freeze on a specific release.
-
-# 3. Prepare a config directory on the host
+# Prepare config and set obsidian.vault_path to /vault.
 mkdir -p config
-curl -o config/config.yaml https://raw.githubusercontent.com/BGGBTAC/reMark/main/config.example.yaml
-# edit config/config.yaml — at minimum set vault_path to /vault
+cp config.example.yaml config/config.yaml
 
-# 4. Pull and start both services
-docker compose up -d
+# Build, sign in to Codex, and start both services.
+docker compose build
+docker compose run --rm --no-deps --pull never --entrypoint codex sync login --device-auth
+docker compose up -d --pull never
 ```
-
-Prefer building from a checkout? The same compose file has a `build:`
-block as fallback — just run `docker compose build && docker compose up -d`
-from inside the repository.
 
 The dashboard is reachable on <http://localhost:8000> (set `REMARK_WEB_PORT`
 in `.env` to change the host port). First-time reMarkable Cloud auth
@@ -233,8 +230,8 @@ docker compose exec sync remark-bridge auth
 docker compose logs -f sync
 ```
 
-Named volumes `vault` and `state` persist your Obsidian vault and the
-SQLite state DB across container recreates. Healthchecks hit `/healthz`,
+Named volumes `vault`, `state`, and `codex-auth` persist your Obsidian vault,
+SQLite state DB, and Codex sign-in across container recreates. Healthchecks hit `/healthz`,
 so `docker compose ps` flags a degraded deployment.
 
 **Available tags** on `ghcr.io/bggbtac/remark-bridge`:
@@ -248,12 +245,36 @@ so `docker compose ps` flags a degraded deployment.
 ## Setup
 
 ```bash
+codex login
+
 # Interactive setup — authenticates with reMarkable Cloud,
 # creates config, initializes vault structure and state DB
 remark-bridge setup
 ```
 
 During setup you'll need a one-time code from [my.remarkable.com/device/browser/connect](https://my.remarkable.com/device/browser/connect).
+
+### Upgrade from OCR-based sync
+
+Install Codex on the sync host and run `codex login` as the account that
+runs sync. Remove the legacy `ocr` section from your config. If you wrote
+an OCR plugin, remove it from your plugin directory since the OCR hook
+has been removed.
+
+For page conversion without optional enrichment or responses, set the
+following in your existing config.
+
+```yaml
+processing:
+  extract_actions: false
+  extract_tags: false
+  generate_summary: false
+sync:
+  push_responses: false
+```
+
+Run `remark-bridge sync --once` to verify the setup with a new or changed
+notebook. Sync uses the existing state DB to skip unchanged notebooks.
 
 ## Configuration
 
@@ -269,7 +290,6 @@ Key sections:
 |---------|-----------------|
 | `llm` | LLM provider (`anthropic` / `ollama`) + model selection |
 | `remarkable` | Cloud auth, folder filters, response folder |
-| `ocr` | Primary/fallback OCR engines, confidence threshold |
 | `processing` | Model selection, what to extract (actions, tags, summaries) |
 | `obsidian` | Vault path, folder mapping, Git sync settings |
 | `sync` | Trigger mode (realtime/scheduled/manual), streaming threshold |
@@ -380,9 +400,8 @@ reMark can be extended with user-written plugins. See **[docs/plugins.md](docs/p
 **Quick overview:**
 
 1. Create a `.py` file in `~/.config/remark/plugins/` (configurable via `plugins.plugin_dir`), or distribute a package exposing a `remark_bridge.plugins` entry point.
-2. Subclass one or more of the four hook types in [src/plugins/hooks.py](src/plugins/hooks.py):
+2. Subclass one or more of the three hook types in [src/plugins/hooks.py](src/plugins/hooks.py):
    - `ActionExtractorHook` — emit extra action items from note text.
-   - `OCRBackendHook` — provide an additional OCR engine.
    - `NoteProcessorHook` — post-process the structured note before it's written to the vault.
    - `SyncHook` — observe sync lifecycle events (`before_sync`, `after_sync`, `after_document`).
 3. Each plugin must expose a `metadata` property returning a `PluginMetadata` dataclass with at least a unique `name`.
@@ -486,25 +505,21 @@ Register an app at [entra.microsoft.com](https://entra.microsoft.com) (Public cl
 
 ## reMarkable Marking Conventions
 
-Use pen colors and text patterns to mark up your notes. reMark detects both, so it works on the monochrome rM2 too (just use text patterns).
-
-| Mark | Pen Color | Meaning | Detection |
-|------|-----------|---------|-----------|
-| Action item | Red | Task to do | Color filter |
-| Question | Blue | Needs follow-up | Color filter |
-| Important | Yellow highlight | Key info | Color filter |
-| Done | Green | Completed | Color filter |
-| `TODO:` text | Any | Task | Text pattern |
-| `Q:` text | Any | Question | Text pattern |
-| `!` prefix | Any | Priority flag | Text pattern |
-| `[ ]` checkbox | Any | Task checkbox | Text pattern |
+Enable `processing.extract_actions` to extract actions from converted
+Markdown. Use text cues such as `TODO:`, `Q:`, or an unchecked Markdown
+checkbox. To add pen color cues, set `processing.actions.action_colors`
+to the reMarkable color indices you use for actions. Red (6) is the default.
 
 ## Deployment (systemd)
+
+Install Codex on the service's `PATH` and run `codex login` as the
+`remark` user defined in the sync unit. For Codex conversion, install
+reMark from this checkout as described above.
 
 ```bash
 # Install on VPS
 sudo apt install libcairo2-dev
-pip install remark-bridge
+pip install .
 
 # Run setup
 remark-bridge setup
@@ -517,7 +532,7 @@ sudo cp systemd/remark-bridge-web.service  /etc/systemd/system/
 # Drop secrets into /etc/remark-bridge/env (read by both units)
 sudo mkdir -p /etc/remark-bridge
 sudo tee /etc/remark-bridge/env > /dev/null <<'ENV'
-ANTHROPIC_API_KEY=sk-ant-...
+# ANTHROPIC_API_KEY=sk-ant-... (optional, for Anthropic-powered features)
 # NOTION_TOKEN=secret_... (optional)
 ENV
 sudo chmod 600 /etc/remark-bridge/env
@@ -546,17 +561,11 @@ reMark/
 │   │   ├── cloud.py                # Cloud API client (sync 1.5)
 │   │   ├── documents.py            # Document listing, download, upload
 │   │   ├── websocket.py            # Real-time change notifications
-│   │   └── formats.py              # .rm file parsing (wraps rmscene)
-│   │
-│   ├── ocr/                        # Handwriting recognition pipeline
-│   │   ├── pipeline.py             # OCR orchestrator (strategy pattern)
-│   │   ├── remarkable_builtin.py   # MyScript conversion reader
-│   │   ├── google_vision.py        # Google Cloud Vision backend
-│   │   ├── vlm.py                  # Vision LLM backend (Anthropic / OpenAI / Ollama)
-│   │   └── renderer.py             # .rm → PNG/SVG rendering
+│   │   ├── formats.py              # .rm file parsing (wraps rmscene)
+│   │   └── renderer.py             # Combined typed text and ink → PNG
 │   │
 │   ├── processing/                 # Intelligent note processing
-│   │   ├── structurer.py           # Raw text → structured Markdown
+│   │   ├── codex.py                # Page image → Markdown + inline SVG
 │   │   ├── actions.py              # Action item extraction
 │   │   ├── tagger.py               # Auto-tagging
 │   │   ├── summarizer.py           # Note summarization
@@ -599,7 +608,7 @@ reMark/
 │   │       └── service.py          # High-level facade
 │   │
 │   ├── plugins/                    # Plugin system (v0.3)
-│   │   ├── hooks.py                # ActionExtractor / OCR / Processor / Sync
+│   │   ├── hooks.py                # ActionExtractor / Processor / Sync
 │   │   ├── registry.py             # Discovery + enable/disable
 │   │   └── examples/               # Reference plugins
 │   │

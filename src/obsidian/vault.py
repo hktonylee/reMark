@@ -50,6 +50,8 @@ class ObsidianVault:
         # If updating, merge frontmatter with existing
         if path.exists():
             existing_fm, _ = self.read_note(path) or ({}, "")
+            if frontmatter.get("ocr_engine") == "codex":
+                existing_fm.pop("ocr_confidence", None)
             if existing_fm:
                 # Preserve manually added fields
                 for key, val in existing_fm.items():

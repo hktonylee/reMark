@@ -24,14 +24,4 @@ plugins:
     math_latex:
       wrap_inline: true
       wrap_block: true
-    math_latex_ocr:
-      backend: pix2text         # or "mathpix"
-      mathpix_app_id_env: MATHPIX_APP_ID
-      mathpix_app_key_env: MATHPIX_APP_KEY
 ```
-
-The separate `math_latex_ocr` class is an optional OCR backend that
-delegates to `pix2text` (`pip install pix2text`) or the MathPix API.
-It ships as a stub: the engine doesn't hand individual page images to
-OCR plugins yet — that wiring is planned for a follow-up release. For
-now it's safe to enable; if the engine never calls it, nothing happens.

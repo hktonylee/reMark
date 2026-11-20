@@ -6,15 +6,6 @@ Drops into ``~/.config/remark/plugins/`` (or wherever
 looks for bare LaTeX fragments and wraps them in ``$...$`` so Obsidian
 (and any Markdown renderer with MathJax/KaTeX) picks them up as math.
 
-It works purely on text — no image access required — so it's safe to
-enable for any vault. For heavier lifting (image → LaTeX OCR) see the
-``plugins.settings.math_latex.use_pix2text`` toggle below: when enabled
-the plugin registers a secondary ``OCRBackendHook`` that delegates to
-`pix2text`_ or MathPix for any image-like payload the pipeline hands
-it. Both are opt-in and optional; plain Python installs see only the
-NoteProcessor path.
-
-.. _pix2text: https://github.com/breezedeus/Pix2Text
 """
 
 from __future__ import annotations
@@ -23,7 +14,7 @@ import logging
 import re
 from typing import Any
 
-from src.plugins.hooks import NoteProcessorHook, OCRBackendHook, PluginMetadata
+from src.plugins.hooks import NoteProcessorHook, PluginMetadata
 
 logger = logging.getLogger(__name__)
 
@@ -61,10 +52,7 @@ class MathLatexProcessor(NoteProcessorHook):
         return PluginMetadata(
             name="math_latex",
             version="0.1.0",
-            description=(
-                "Auto-wraps bare LaTeX fragments in $...$ for Obsidian math "
-                "rendering. Opt-in pix2text/MathPix OCR backend available."
-            ),
+            description="Auto-wraps bare LaTeX fragments in $...$ for Obsidian math rendering.",
             author="BGGBTAC",
         )
 
@@ -121,109 +109,3 @@ class MathLatexProcessor(NoteProcessorHook):
         frontmatter.setdefault("math_fragments", wrapped_count)
         logger.debug("math_latex: wrapped %d fragment(s)", wrapped_count)
         return new_content, frontmatter
-
-
-class MathLatexOCR(OCRBackendHook):
-    """Optional OCR backend that delegates to pix2text or MathPix.
-
-    Registration is gated on the ``backend`` setting so users without
-    either library installed see no runtime error. The engine can pick
-    this backend up via ``plugins`` discovery and call it when an image
-    is handed to the OCR pipeline — the wiring for that call site is
-    planned for a follow-up release; today the hook is a stub that
-    returns empty text if invoked.
-    """
-
-    def __init__(self) -> None:
-        self._backend = "pix2text"
-        self._mathpix_app_id_env = "MATHPIX_APP_ID"
-        self._mathpix_app_key_env = "MATHPIX_APP_KEY"
-
-    @property
-    def metadata(self) -> PluginMetadata:
-        return PluginMetadata(
-            name="math_latex_ocr",
-            version="0.1.0",
-            description="Math OCR via pix2text (default) or MathPix API.",
-            author="BGGBTAC",
-        )
-
-    def configure(self, settings: dict[str, Any]) -> None:
-        self._backend = settings.get("backend", "pix2text")
-        self._mathpix_app_id_env = settings.get(
-            "mathpix_app_id_env", self._mathpix_app_id_env,
-        )
-        self._mathpix_app_key_env = settings.get(
-            "mathpix_app_key_env", self._mathpix_app_key_env,
-        )
-
-    async def recognize_page(self, page_image: bytes) -> dict:
-        if self._backend == "mathpix":
-            return await self._mathpix(page_image)
-        return await self._pix2text(page_image)
-
-    async def _pix2text(self, page_image: bytes) -> dict:
-        try:
-            from pix2text import Pix2Text  # type: ignore[import-not-found]
-        except ImportError:
-            return {
-                "text": "",
-                "confidence": 0.0,
-                "engine": "math_latex_ocr/pix2text(not-installed)",
-            }
-        import asyncio
-        import tempfile
-        from pathlib import Path
-
-        def _run() -> str:
-            p2t = Pix2Text.from_config()
-            with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tmp:
-                tmp.write(page_image)
-                tmp_path = tmp.name
-            try:
-                return p2t.recognize_text_formula(tmp_path, return_text=True)
-            finally:
-                Path(tmp_path).unlink(missing_ok=True)
-
-        text = await asyncio.to_thread(_run)
-        return {
-            "text": text,
-            "confidence": 0.85,
-            "engine": "math_latex_ocr/pix2text",
-        }
-
-    async def _mathpix(self, page_image: bytes) -> dict:
-        import base64
-        import os
-
-        import httpx
-
-        app_id = os.environ.get(self._mathpix_app_id_env)
-        app_key = os.environ.get(self._mathpix_app_key_env)
-        if not app_id or not app_key:
-            logger.warning("MathPix credentials missing; returning empty")
-            return {
-                "text": "",
-                "confidence": 0.0,
-                "engine": "math_latex_ocr/mathpix(unauthenticated)",
-            }
-        encoded = base64.b64encode(page_image).decode("ascii")
-        async with httpx.AsyncClient() as client:
-            resp = await client.post(
-                "https://api.mathpix.com/v3/text",
-                headers={"app_id": app_id, "app_key": app_key},
-                json={"src": f"data:image/png;base64,{encoded}"},
-                timeout=30,
-            )
-        if resp.status_code != 200:
-            return {
-                "text": "",
-                "confidence": 0.0,
-                "engine": f"math_latex_ocr/mathpix(http-{resp.status_code})",
-            }
-        data = resp.json()
-        return {
-            "text": data.get("text", ""),
-            "confidence": data.get("confidence", 0.9),
-            "engine": "math_latex_ocr/mathpix",
-        }

@@ -1,6 +1,6 @@
 """LLMClient interface — shared by Anthropic, Ollama, future providers.
 
-Consumers (processing, reports, OCR VLM) depend on this ABC rather than on
+Consumers (processing, reports) depend on this ABC rather than on
 a vendor SDK, so switching providers is a config flip.
 """
 

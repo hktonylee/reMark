@@ -44,14 +44,6 @@ class ActionExtractorHook(Plugin):
         """Return a list of action dicts with at least a 'task' key."""
 
 
-class OCRBackendHook(Plugin):
-    """Provide an additional OCR engine usable from the pipeline."""
-
-    @abstractmethod
-    async def recognize_page(self, page_image: bytes) -> dict:
-        """Return dict with keys: text, confidence (0-1), engine (name)."""
-
-
 class NoteProcessorHook(Plugin):
     """Post-process a structured note before it's written to the vault."""
 

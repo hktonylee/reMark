@@ -11,7 +11,6 @@ import logging
 from datetime import UTC, datetime
 
 from src.config import AppConfig
-from src.ocr.pipeline import OCRPipeline
 from src.remarkable.auth import AuthManager
 from src.remarkable.cloud import RemarkableCloud
 from src.remarkable.documents import DocumentManager
@@ -28,7 +27,7 @@ class SyncScheduler:
         self._config = config
         self._running = False
 
-    async def run(self, auth: AuthManager, ocr_pipeline: OCRPipeline) -> None:
+    async def run(self, auth: AuthManager) -> None:
         """Run sync on a schedule until stopped.
 
         Parses the cron expression from config and sleeps between runs.
@@ -39,7 +38,7 @@ class SyncScheduler:
         logger.info("Scheduler started (interval: %ds)", interval)
 
         while self._running:
-            await self._run_cycle(auth, ocr_pipeline)
+            await self._run_cycle(auth)
 
             logger.debug("Next sync in %ds", interval)
             try:
@@ -49,11 +48,11 @@ class SyncScheduler:
 
         logger.info("Scheduler stopped")
 
-    async def run_once(self, auth: AuthManager, ocr_pipeline: OCRPipeline) -> None:
+    async def run_once(self, auth: AuthManager) -> None:
         """Run a single sync cycle."""
-        await self._run_cycle(auth, ocr_pipeline)
+        await self._run_cycle(auth)
 
-    async def _run_cycle(self, auth: AuthManager, ocr_pipeline: OCRPipeline) -> None:
+    async def _run_cycle(self, auth: AuthManager) -> None:
         """Execute one sync cycle with full resource management."""
         start = datetime.now(UTC)
         logger.info("Sync cycle starting at %s", start.isoformat())
@@ -63,7 +62,7 @@ class SyncScheduler:
 
             async with RemarkableCloud(auth) as cloud:
                 doc_manager = DocumentManager(cloud, download_dir)
-                report = await self._engine.sync_once(cloud, doc_manager, ocr_pipeline)
+                report = await self._engine.sync_once(cloud, doc_manager)
 
             logger.info(
                 "Cycle complete: %d/%d processed, %d skipped, %d errors (%dms)",

@@ -1,24 +1,16 @@
 """reMarkable file format parsing.
 
-Wraps the rmscene library to provide higher-level access to
-.rm v6 files, extracting text, strokes, and rendering pages.
+Wraps the rmscene library to read .rm v6 pages and group colored strokes.
 """
 
 from __future__ import annotations
 
-import json
 import logging
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from rmscene import RootTextBlock, read_blocks, read_tree
-from rmscene.scene_items import (
-    GlyphRange,
-    Line,
-    ParagraphStyle,
-    PenColor,
-    Text,
-)
+from rmscene import SceneTree, read_tree
+from rmscene.scene_items import Line, PenColor
 
 logger = logging.getLogger(__name__)
 
@@ -36,17 +28,6 @@ COLOR_INDEX_MAP: dict[PenColor, int] = {
 
 # Reverse map for lookup by index
 INDEX_COLOR_MAP: dict[int, PenColor] = {v: k for k, v in COLOR_INDEX_MAP.items()}
-
-# Map ParagraphStyle to Markdown
-STYLE_MAP: dict[ParagraphStyle, str] = {
-    ParagraphStyle.HEADING: "# ",
-    ParagraphStyle.BOLD: "**",
-    ParagraphStyle.BULLET: "- ",
-    ParagraphStyle.BULLET2: "  - ",
-    ParagraphStyle.CHECKBOX: "- [ ] ",
-    ParagraphStyle.CHECKBOX_CHECKED: "- [x] ",
-}
-
 
 @dataclass
 class StrokeGroup:
@@ -68,46 +49,11 @@ class PageContent:
     """Parsed content from a single .rm page."""
 
     page_id: str
-    text_blocks: list[TextBlock] = field(default_factory=list)
-    lines: list[Line] = field(default_factory=list)
-    glyph_ranges: list[GlyphRange] = field(default_factory=list)
+    tree: SceneTree = field(default_factory=SceneTree)
 
     @property
-    def has_text(self) -> bool:
-        return bool(self.text_blocks) or bool(self.glyph_ranges)
-
-    @property
-    def has_strokes(self) -> bool:
-        return bool(self.lines)
-
-    @property
-    def plain_text(self) -> str:
-        """All text content concatenated."""
-        parts = []
-        for block in self.text_blocks:
-            parts.append(block.to_markdown())
-        for glyph in self.glyph_ranges:
-            parts.append(glyph.text)
-        return "\n".join(parts)
-
-
-@dataclass
-class TextBlock:
-    """A block of text extracted from a .rm file's CRDT data."""
-
-    text: str
-    style: ParagraphStyle | None = None
-    pos_x: float = 0
-    pos_y: float = 0
-    width: float = 0
-
-    def to_markdown(self) -> str:
-        if self.style and self.style in STYLE_MAP:
-            prefix = STYLE_MAP[self.style]
-            if self.style == ParagraphStyle.BOLD:
-                return f"**{self.text}**"
-            return f"{prefix}{self.text}"
-        return self.text
+    def lines(self) -> list[Line]:
+        return [item for item in self.tree.walk() if isinstance(item, Line)]
 
 
 @dataclass
@@ -125,57 +71,10 @@ class Notebook:
     def page_count(self) -> int:
         return len(self.pages)
 
-    @property
-    def all_text(self) -> str:
-        """Concatenated text from all pages."""
-        return "\n\n".join(page.plain_text for page in self.pages if page.plain_text.strip())
-
-
 def parse_rm_file(rm_path: Path) -> PageContent:
-    """Parse a single .rm v6 file into structured content.
-
-    Text content lives in RootTextBlock (CRDT), not in the scene tree.
-    Strokes (Lines) and GlyphRanges come from the scene tree via walk().
-    We need both read_blocks() and read_tree() for full extraction.
-    """
-    page_id = rm_path.stem
-
-    text_blocks: list[TextBlock] = []
-    lines: list[Line] = []
-    glyph_ranges: list[GlyphRange] = []
-
-    # Pass 1: read blocks for RootTextBlock (CRDT text)
-    with open(rm_path, "rb") as f:
-        for block in read_blocks(f):
-            if isinstance(block, RootTextBlock) and isinstance(block.value, Text):
-                tb = _extract_text_block(block.value)
-                if tb and tb.text.strip():
-                    text_blocks.append(tb)
-
-    # Pass 2: read scene tree for Lines and GlyphRanges (strokes, handwriting)
-    with open(rm_path, "rb") as f:
-        tree = read_tree(f)
-
-    for item in tree.walk():
-        if isinstance(item, Line):
-            lines.append(item)
-        elif isinstance(item, GlyphRange):
-            glyph_ranges.append(item)
-
-    logger.debug(
-        "Parsed %s: %d text blocks, %d lines, %d glyphs",
-        rm_path.name,
-        len(text_blocks),
-        len(lines),
-        len(glyph_ranges),
-    )
-
-    return PageContent(
-        page_id=page_id,
-        text_blocks=text_blocks,
-        lines=lines,
-        glyph_ranges=glyph_ranges,
-    )
+    """Parse typed text, ink, and layout from one .rm v6 scene."""
+    with rm_path.open("rb") as source:
+        return PageContent(page_id=rm_path.stem, tree=read_tree(source))
 
 
 def parse_notebook(doc_dir: Path, doc_id: str, page_ids: list[str]) -> list[PageContent]:
@@ -196,45 +95,20 @@ def parse_notebook(doc_dir: Path, doc_id: str, page_ids: list[str]) -> list[Page
         rm_path = _find_rm_file(doc_dir, doc_id, page_id)
 
         if rm_path is None:
-            logger.debug("No .rm file for page %s, skipping", page_id[:8])
+            logger.debug("No .rm file for blank page %s", page_id[:8])
             pages.append(PageContent(page_id=page_id))
             continue
 
         try:
-            page = parse_rm_file(rm_path)
-            pages.append(page)
+            pages.append(parse_rm_file(rm_path))
         except Exception as e:
-            logger.warning("Failed to parse page %s: %s", page_id[:8], e)
-            pages.append(PageContent(page_id=page_id))
+            raise ValueError(f"Failed to parse reMarkable page {page_id}: {e}") from e
 
     return pages
 
 
-def extract_typed_text(doc_dir: Path, doc_id: str, page_ids: list[str]) -> dict[str, str]:
-    """Extract CRDT text from all pages (no OCR needed).
-
-    Returns {page_id: text_content} for pages that have typed text.
-    """
-    result: dict[str, str] = {}
-
-    for page_id in page_ids:
-        rm_path = _find_rm_file(doc_dir, doc_id, page_id)
-        if rm_path is None:
-            continue
-
-        try:
-            page = parse_rm_file(rm_path)
-            text = page.plain_text.strip()
-            if text:
-                result[page_id] = text
-        except Exception as e:
-            logger.debug("No text from page %s: %s", page_id[:8], e)
-
-    return result
-
-
 def extract_strokes_by_color(
-    doc_dir: Path, doc_id: str, page_ids: list[str], colors: list[int]
+    pages: list[PageContent], colors: list[int]
 ) -> dict[str, list[StrokeGroup]]:
     """Extract strokes filtered by color index.
 
@@ -250,117 +124,15 @@ def extract_strokes_by_color(
 
     result: dict[str, list[StrokeGroup]] = {}
 
-    for page_id in page_ids:
-        rm_path = _find_rm_file(doc_dir, doc_id, page_id)
-        if rm_path is None:
-            continue
-
-        try:
-            page = parse_rm_file(rm_path)
-        except Exception:
-            continue
-
-        groups = _group_strokes_by_color(page.lines, target_colors, page_id)
+    for page in pages:
+        groups = _group_strokes_by_color(page.lines, target_colors, page.page_id)
         if groups:
-            result[page_id] = groups
+            result[page.page_id] = groups
 
     return result
 
 
-def get_builtin_text_conversion(doc_dir: Path, doc_id: str) -> dict[str, str] | None:
-    """Check for reMarkable's MyScript "Convert to text" results.
-
-    When a user triggers conversion on the tablet, results are stored
-    in {doc_id}.textconversion/{page_id}.json.
-
-    Returns {page_id: converted_text} or None if no conversion exists.
-    """
-    conv_dir = doc_dir / f"{doc_id}.textconversion"
-
-    if not conv_dir.exists():
-        # Also try without doc_id prefix
-        for d in doc_dir.glob("*.textconversion"):
-            conv_dir = d
-            break
-
-    if not conv_dir.exists():
-        return None
-
-    result: dict[str, str] = {}
-
-    for json_file in sorted(conv_dir.glob("*.json")):
-        try:
-            data = json.loads(json_file.read_text())
-            text = data.get("text", "")
-            if not text and "paragraphs" in data:
-                # Alternative format: array of paragraph objects
-                paragraphs = data["paragraphs"]
-                text = "\n".join(p.get("text", "") for p in paragraphs if isinstance(p, dict))
-            if text.strip():
-                result[json_file.stem] = text.strip()
-        except (json.JSONDecodeError, KeyError) as e:
-            logger.warning("Failed to parse text conversion %s: %s", json_file.name, e)
-
-    return result if result else None
-
-
-def render_page_to_png(doc_dir: Path, doc_id: str, page_id: str, dpi: int = 300) -> bytes | None:
-    """Render a .rm page to PNG for image-based OCR.
-
-    Uses rmscene to get stroke data, renders to SVG, converts to PNG via cairosvg.
-    """
-    rm_path = _find_rm_file(doc_dir, doc_id, page_id)
-    if rm_path is None:
-        return None
-
-    try:
-        page = parse_rm_file(rm_path)
-    except Exception as e:
-        logger.warning("Failed to parse %s for rendering: %s", page_id[:8], e)
-        return None
-
-    if not page.lines:
-        logger.debug("No strokes to render for page %s", page_id[:8])
-        return None
-
-    svg = _render_strokes_to_svg(page.lines, dpi)
-    return _svg_to_png(svg, dpi)
-
-
 # -- Internal helpers --
-
-
-def _extract_text_block(text_item: Text) -> TextBlock | None:
-    """Extract a TextBlock from an rmscene Text item.
-
-    CrdtSequence.values() yields the actual string/int values.
-    Strings are text content, ints represent special chars (0 = newline).
-    """
-    chars: list[str] = []
-    for value in text_item.items.values():
-        if isinstance(value, str):
-            chars.append(value)
-        elif isinstance(value, int) and value == 0:
-            chars.append("\n")
-
-    text = "".join(chars).strip()
-    if not text:
-        return None
-
-    # Get paragraph style from the first style entry
-    style = None
-    if text_item.styles:
-        first_style = next(iter(text_item.styles.values()), None)
-        if first_style is not None:
-            style = first_style.value
-
-    return TextBlock(
-        text=text,
-        style=style,
-        pos_x=text_item.pos_x,
-        pos_y=text_item.pos_y,
-        width=text_item.width,
-    )
 
 
 def _group_strokes_by_color(
@@ -424,64 +196,3 @@ def _find_rm_file(doc_dir: Path, doc_id: str, page_id: str) -> Path | None:
         return rm_file
 
     return None
-
-
-def _render_strokes_to_svg(lines: list[Line], dpi: int = 300) -> str:
-    """Render stroke data to an SVG string.
-
-    reMarkable canvas is 1404 x 1872 units at 226 DPI.
-    """
-    rm_width = 1404
-    rm_height = 1872
-    scale = dpi / 226.0
-
-    width = rm_width * scale
-    height = rm_height * scale
-
-    svg_parts = [
-        f'<svg xmlns="http://www.w3.org/2000/svg" '
-        f'width="{width:.0f}" height="{height:.0f}" '
-        f'viewBox="0 0 {rm_width} {rm_height}">'
-    ]
-
-    # White background
-    svg_parts.append(f'<rect width="{rm_width}" height="{rm_height}" fill="white"/>')
-
-    color_map = {
-        PenColor.BLACK: "#000000",
-        PenColor.GRAY: "#808080",
-        PenColor.WHITE: "#ffffff",
-        PenColor.YELLOW: "#ffff00",
-        PenColor.GREEN: "#00cc00",
-        PenColor.BLUE: "#0000ff",
-        PenColor.RED: "#ff0000",
-        PenColor.PINK: "#ff69b4",
-    }
-
-    for line in lines:
-        if len(line.points) < 2:
-            continue
-
-        color = color_map.get(line.color, "#000000")
-        base_width = line.thickness_scale * 2.0
-
-        path_d = []
-        for i, point in enumerate(line.points):
-            cmd = "M" if i == 0 else "L"
-            path_d.append(f"{cmd}{point.x:.1f},{point.y:.1f}")
-
-        svg_parts.append(
-            f'<path d="{" ".join(path_d)}" '
-            f'stroke="{color}" stroke-width="{base_width:.1f}" '
-            f'fill="none" stroke-linecap="round" stroke-linejoin="round"/>'
-        )
-
-    svg_parts.append("</svg>")
-    return "\n".join(svg_parts)
-
-
-def _svg_to_png(svg: str, dpi: int = 300) -> bytes:
-    """Convert SVG string to PNG bytes using cairosvg."""
-    import cairosvg
-
-    return cairosvg.svg2png(bytestring=svg.encode("utf-8"), dpi=dpi)
